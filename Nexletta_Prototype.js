@@ -1,0 +1,2197 @@
+'use strict';
+
+/* ═══ BLUEPRINT DATA (exact terms & values) ═══ */
+const STATUSES = [
+  'Pending Records','Records complete','Pending Pre-Review','Pre-Review completed',
+  'Pending Payment','In progress','Pending QA Review','Ready','Complete','Recon','On Hold','Cancelled'
+];
+const PLAIN_STATUS = {
+  'Pending Records':'Waiting for your documents',
+  'Records complete':'Documents received, under review',
+  'Pending Pre-Review':'Reviewing your records',
+  'Pre-Review completed':'Records approved, your invoice has been sent',
+  'Pending Payment':'Payment required to begin your evaluation',
+  'In progress':'Your evaluation is underway',
+  'Pending QA Review':'Your evaluation is being reviewed for quality',
+  'Ready':'Your report is ready for collection',
+  'Complete':'Your case is complete',
+  'Recon':'Your case is under reconsideration',
+  'On Hold':'Your case is currently on hold',
+  'Cancelled':'This case has been cancelled'
+};
+const CASE_TYPES = ['Nexus Letter','IME Single','IME Complex','DBQ','Rebuttal','TDIU','Custom'];
+const DOC_CATS = [
+  {code:'STR',name:'Service Treatment Records',by:'Veteran'},
+  {code:'PMR',name:'Personnel / Military Records',by:'Veteran'},
+  {code:'VAMC',name:'VA Medical Center Records',by:'Veteran'},
+  {code:'PRIV',name:'Private Medical Records',by:'Veteran or Staff'},
+  {code:'CP',name:'Prior C&P Exam',by:'Veteran or Staff'},
+  {code:'C-File',name:'Claims File',by:'Veteran or Staff'},
+  {code:'CORR',name:'Correspondence / Other',by:'Staff'},
+  {code:'REPORT',name:'Final Evaluation Report',by:'System (generated)'}
+];
+const STAFF_GROUPS = ['Admin','Scheduler','Biller','Reviewer'];  // staff user groups (no "Staff " prefix)
+const STAFF_ROLES = STAFF_GROUPS;                                // header role-switcher / nav gating uses staff groups
+const RBAC_ROLES = ['Super Admin','Admin','User'];               // main roles (RBAC)
+const USER_GROUPS = [...STAFF_GROUPS,'Provider','Veteran','Representative']; // full 7-group set
+function isStaffGroup(g){ return STAFF_GROUPS.includes(g); }
+function groupPortal(g){ return isStaffGroup(g)?'Staff Portal':g==='Provider'?'Provider Portal':'Veteran Portal'; }
+function deriveRole(g){ return g==='Admin'?'Admin':'User'; }     // Super Admin handled via explicit flag
+const SPECIALTIES = ['Orthopedics / General IME','Psychology / PTSD','Neurology','Audiology','Cardiology','General Medicine'];
+const LICENSE_STATES = ['TX','CA','NY','FL','GA','VA'];
+const TEMPLATES = ['PTSD DBQ','Musculoskeletal DBQ (Knee)','Tinnitus DBQ','Nexus Letter Opinion','TDIU Opinion','Records Review Layout'];
+const WEEKDAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+/* Mutable prototype data stores */
+let CASES = [
+  {mrn:'NXL-2026-0089',veteranId:'VET-10482',clientId:'CLI-8821',name:'James R. Martinez',dob:'1978-03-14',org:'None',type:'DBQ',status:'Pending Records',provider:'Dr. Sarah Whitmore, MD',reviewer:'A. Nguyen',sla:'—',payment:'—',contentions:['PTSD','Right Knee','Tinnitus'],billingMode:'Standard',amount:900,rep:'None',internalNotes:''},
+  {mrn:'NXL-2026-0091',veteranId:'VET-11003',clientId:'CLI-11003',name:'Robert T. Chen',dob:'1965-11-02',org:'None',type:'Nexus Letter',status:'In progress',provider:'Dr. Elena Vasquez, PsyD',reviewer:'M. Patel',sla:'Jul 8, 2026',payment:'Paid',contentions:['Sleep Apnea'],billingMode:'Standard',amount:450,rep:'None',internalNotes:''},
+  {mrn:'NXL-2026-0075',veteranId:'VET-9876',clientId:'CLI-5500',name:'Linda M. Foster',dob:'1972-07-22',org:'Torres & Associates Law Firm',type:'IME Single',status:'Pending Payment',provider:'Dr. Sarah Whitmore, MD',reviewer:'A. Nguyen',sla:'—',payment:'Pending',contentions:['Lower Back'],billingMode:'Standard',amount:650,rep:'None',internalNotes:''},
+  {mrn:'NXL-2026-0062',veteranId:'VET-9201',clientId:'CLI-5500',name:'David K. Williams',dob:'1980-01-09',org:'Torres & Associates Law Firm',type:'TDIU',status:'Pre-Review completed',provider:'—',reviewer:'M. Patel',sla:'—',payment:'Deferred',contentions:['TDIU'],billingMode:'Deferred',amount:750,rep:'None',internalNotes:''},
+  {mrn:'NXL-2026-0055',veteranId:'VET-8800',clientId:'CLI-8800',name:'Angela S. Brooks',dob:'1968-09-30',org:'None',type:'Rebuttal',status:'Pending QA Review',provider:'Dr. James Okonkwo, MD',reviewer:'A. Nguyen',sla:'Jul 5, 2026',payment:'Paid',contentions:['Migraine'],billingMode:'Standard',amount:550,rep:'None',internalNotes:''},
+  {mrn:'NXL-2026-0048',veteranId:'VET-8500',clientId:'CLI-8500',name:'Thomas W. Hughes',dob:'1955-04-18',org:'American Legion VSO — Chapter 42',type:'DBQ',status:'Ready',provider:'Dr. Sarah Whitmore, MD',reviewer:'M. Patel',sla:'Met',payment:'Paid',contentions:['Hearing Loss'],billingMode:'Standard',amount:900,rep:'None',internalNotes:''}
+];
+let VETERANS = [
+  {veteranId:'VET-10482',clientId:'CLI-8821',name:'James R. Martinez',dob:'1978-03-14',gender:'Male',org:'None',cases:2,lastStatus:'Pending Records',email:'j.martinez@email.com',phone:'(555) 234-8891',address:'1234 Veterans Way, Dallas, TX 75201',rep:'None'},
+  {veteranId:'VET-11003',clientId:'CLI-11003',name:'Robert T. Chen',dob:'1965-11-02',gender:'Male',org:'None',cases:1,lastStatus:'In progress',email:'r.chen@email.com',phone:'(555) 441-2200',address:'890 Oak St, Austin, TX 78701',rep:'None'},
+  {veteranId:'VET-9876',clientId:'CLI-5500',name:'Linda M. Foster',dob:'1972-07-22',gender:'Female',org:'Torres & Associates Law Firm',cases:1,lastStatus:'Pending Payment',email:'l.foster@email.com',phone:'(555) 778-3301',address:'456 Elm Ave, Houston, TX 77002',rep:'None'}
+];
+let APPOINTMENTS = [
+  {id:'APT-301',name:'James R. Martinez',mrn:'NXL-2026-0089',provider:'Dr. Sarah Whitmore, MD',location:'Nexletta Clinic — Dallas (In-person)',type:'DBQ Evaluation',datetime:'Jul 10, 2026 10:00 AM',status:'Scheduled',notes:''},
+  {id:'APT-298',name:'Robert T. Chen',mrn:'NXL-2026-0091',provider:'Dr. Elena Vasquez, PsyD',location:'Telehealth',type:'Nexus Letter — No visit',datetime:'—',status:'N/A',notes:''},
+  {id:'APT-295',name:'Thomas W. Hughes',mrn:'NXL-2026-0048',provider:'Dr. Sarah Whitmore, MD',location:'Nexletta Clinic — Dallas',type:'DBQ Evaluation',datetime:'Jun 20, 2026 2:00 PM',status:'Completed',notes:''}
+];
+let INVOICES = [
+  {id:'INV-2026-0441',mrn:'NXL-2026-0075',name:'Linda M. Foster',service:'IME Single',amount:650,status:'Pending',issued:'Jun 28, 2026',due:'Jul 12, 2026',paid:'—',paymentRef:''},
+  {id:'INV-2026-0420',mrn:'NXL-2026-0091',name:'Robert T. Chen',service:'Nexus Letter',amount:450,status:'Paid',issued:'Jun 15, 2026',due:'Jun 29, 2026',paid:'Jun 18, 2026',paymentRef:'ZL-88213'},
+  {id:'INV-2026-0398',mrn:'NXL-2026-0048',name:'Thomas W. Hughes',service:'DBQ',amount:900,status:'Paid',issued:'May 28, 2026',due:'Jun 11, 2026',paid:'Jun 2, 2026',paymentRef:'CHK-44102'}
+];
+let PROVIDERS = [
+  {id:'PRV-001',name:'Dr. Sarah Whitmore, MD',specialty:'Orthopedics / General IME',locations:'Dallas Clinic, Telehealth',license:'TX-MD-448821',licenseState:'TX',npi:'1234567891',email:'s.whitmore@email.com',phone:'(555) 111-2200',cases:4,status:'Active',availability:['Mon','Tue','Wed']},
+  {id:'PRV-002',name:'Dr. Elena Vasquez, PsyD',specialty:'Psychology / PTSD',locations:'Telehealth',license:'TX-PSY-99201',licenseState:'TX',npi:'1234567892',email:'e.vasquez@email.com',phone:'(555) 222-3300',cases:2,status:'Active',availability:['Thu','Fri']},
+  {id:'PRV-003',name:'Dr. James Okonkwo, MD',specialty:'Neurology',locations:'Dallas Clinic',license:'TX-MD-331002',licenseState:'TX',npi:'1234567893',email:'j.okonkwo@email.com',phone:'(555) 333-4400',cases:1,status:'On Leave',availability:[]}
+];
+let USERS = [
+  {name:'Jordan Ellis',email:'j.ellis@nexletta.com',group:'Admin',role:'Super Admin',detail:'All access · practice administrator',status:'Active'},
+  {name:'Alex Nguyen',email:'a.nguyen@nexletta.com',group:'Admin',role:'Admin',detail:'Operations admin',status:'Active'},
+  {name:'Morgan Patel',email:'m.patel@nexletta.com',group:'Scheduler',role:'User',detail:'Scheduling',status:'Active'},
+  {name:'Casey Brooks',email:'c.brooks@nexletta.com',group:'Biller',role:'User',detail:'Billing',status:'Active'},
+  {name:'Riley Nguyen',email:'r.nguyen@nexletta.com',group:'Reviewer',role:'User',detail:'QA reviewer',status:'Active'},
+  {name:'Dr. Sarah Whitmore, MD',email:'s.whitmore@email.com',group:'Provider',role:'User',detail:'Orthopedics / General IME · TX',status:'Active'},
+  {name:'Dr. Elena Vasquez, PsyD',email:'e.vasquez@email.com',group:'Provider',role:'User',detail:'Psychology / PTSD · Telehealth',status:'Active'},
+  {name:'James R. Martinez',email:'j.martinez@email.com',group:'Veteran',role:'User',detail:'VET-10482 · Org: None',status:'Active'},
+  {name:'Linda M. Foster',email:'l.foster@email.com',group:'Veteran',role:'User',detail:'VET-9876 · Torres & Associates',status:'Active'},
+  {name:'Michael Torres',email:'m.torres@torreslaw.com',group:'Representative',role:'User',detail:'Torres & Associates Law Firm · 2 linked',status:'Active'}
+];
+
+/* User Groups (designation-style CRUD) — drive access */
+let USER_GROUP_DEFS = [
+  {name:'Admin',portal:'Staff Portal',role:'Admin',scope:'Full settings & user management',active:true},
+  {name:'Scheduler',portal:'Staff Portal',role:'User',scope:'Cases, appointments, calendar',active:true},
+  {name:'Biller',portal:'Staff Portal',role:'User',scope:'Billing & invoices',active:true},
+  {name:'Reviewer',portal:'Staff Portal',role:'User',scope:'QA reviews & records review',active:true},
+  {name:'Provider',portal:'Provider Portal',role:'User',scope:'Own assigned cases only',active:true},
+  {name:'Veteran',portal:'Veteran Portal',role:'User',scope:'Own case only',active:true},
+  {name:'Representative',portal:'Veteran Portal',role:'User',scope:'All linked veterans',active:true}
+];
+/* Super Admin = highest role: a user (any staff group) flagged with all access. */
+
+const MODULE_PERMS = ['Cases','Case Detail','Veterans','Appointments','Providers','Billing','QA Reviews','Tasks','Announcements','Templates','Settings'];
+
+/* Admin panel tabs (HCMD SuperAdmin nav-tabs pattern) */
+const ADMIN_TABS = ['Users','User Groups','Roles & Permissions','Case Types','Referral Organizations','Locations','Specialties','Dropdown Options','DBQ Library','Templates','Notifications','Activity Log','Compliance & Security','Practice Info'];
+
+let ANNOUNCEMENTS = [
+  {id:'ANN-1',title:'Q3 DBQ library update', audience:'All staff & providers', date:'Jul 1, 2026', body:'Updated Musculoskeletal (Knee) DBQ mapping to the latest VA AcroForm version. Re-check any in-progress knee evaluations.'},
+  {id:'ANN-2',title:'New telehealth room links', audience:'Providers', date:'Jun 28, 2026', body:'Telehealth appointments now use per-visit secure room links generated at booking. No standing links.'},
+  {id:'ANN-3',title:'Billing cutoff for Torres & Associates', audience:'Billers', date:'Jun 25, 2026', body:'Consolidated monthly invoice for Torres & Associates is generated on the 1st. Ensure deferred cases are tagged.'}
+];
+function nextAnnId(){ return 'ANN-'+(ANNOUNCEMENTS.length+1); }
+function caseTypePrice(type){ const ct=CASE_TYPE_DATA.find(x=>x.name===type); return ct?ct.price:0; }
+
+/* ═══ TASKS (HCMD Kanban) ═══ */
+const TASK_STATUS_COLORS = {pending:'#FF5757', started:'#008FBC', paused:'#FFCE74', finished:'#00D4A4', review:'#FFCE74'};
+const TASK_STATUS_LIST = ['pending','started','paused','finished','review'];
+const TASK_PRIORITY_COLORS = {routine:'#0F5F55', urgent:'#918438', emergency:'#BA3636'};
+const TASK_PRIORITY_LANES = [['Emergency','emergency'],['Urgent','urgent'],['Routine','routine']];
+const TASK_TYPES = ['single','team','dept'];
+const TASK_CATEGORIES = [
+  {name:'Records', color:'#665dfe'},{name:'Billing', color:'#918438'},{name:'Scheduling', color:'#008FBC'},
+  {name:'QA', color:'#00D4A4'},{name:'Clinical', color:'#BA3636'},{name:'Follow Up', color:'#e3669a'}
+];
+const TASK_ASSIGNEE_TOGGLE = ['Assign','Creator','All','Mentioned'];
+const CASE_FACILITY = 'Nexletta Clinic — Dallas';
+let TASKS = [
+  {id:'TSK-88', title:'Request additional STR pages', priority:'emergency', status:'pending', type:'single', creator:'M. Patel', isCreator:true, caseMrn:'NXL-2026-0089', patient:'James R. Martinez', categories:['Records'], members:['MP','AN'], comments:2, attachments:1, subFin:1, subTotal:3, context:'Records Team', created:'07/01/26', due:'07/03/26', overdue:true, watch:true},
+  {id:'TSK-87', title:'Confirm C&P exam availability audiometry', priority:'urgent', status:'started', type:'team', creator:'A. Nguyen', isCreator:false, caseMrn:'NXL-2026-0089', patient:'James R. Martinez', categories:['Scheduling','Clinical'], members:['AN','SW','MP','CB'], comments:5, attachments:0, subFin:2, subTotal:4, context:'Scheduling', created:'06/30/26', due:'07/05/26', overdue:false, watch:false},
+  {id:'TSK-86', title:'Generate consolidated invoice — Torres firm', priority:'urgent', status:'review', type:'single', creator:'C. Brooks', isCreator:true, caseMrn:'NXL-2026-0062', patient:'David K. Williams', categories:['Billing'], members:['CB'], comments:1, attachments:2, subFin:0, subTotal:0, context:'Billing', created:'06/29/26', due:'07/06/26', overdue:false, watch:false},
+  {id:'TSK-85', title:'QA review — rebuttal opinion letter', priority:'routine', status:'paused', type:'single', creator:'A. Nguyen', isCreator:false, caseMrn:'NXL-2026-0055', patient:'Angela S. Brooks', categories:['QA'], members:['AN','JE'], comments:0, attachments:0, subFin:0, subTotal:2, context:'QA Reviews', created:'06/28/26', due:'07/08/26', overdue:false, watch:true},
+  {id:'TSK-84', title:'Update practice DBQ library (knee)', priority:'routine', status:'finished', type:'dept', creator:'Jordan Ellis', isCreator:true, caseMrn:null, patient:null, categories:['Clinical'], members:['JE','AN','MP','CB','SW','EV'], comments:3, attachments:1, subFin:3, subTotal:3, context:'Admin', created:'06/20/26', due:'06/25/26', overdue:false, watch:false},
+  {id:'TSK-83', title:'Call veteran re: missing DD214', priority:'routine', status:'pending', type:'single', creator:'M. Patel', isCreator:true, caseMrn:'NXL-2026-0091', patient:'Robert T. Chen', categories:['Records','Follow Up'], members:['MP'], comments:0, attachments:0, subFin:0, subTotal:1, context:'Records Team', created:'07/01/26', due:'07/04/26', overdue:false, watch:false}
+];
+
+let LOCATION_DATA = [
+  {id:'LOC-01',name:'Nexletta Clinic — Dallas',street:'500 Medical Center Blvd',city:'Dallas',state:'TX',zip:'75201',contact:'(214) 555-0100',fax:'(214) 555-0101',email:'dallas@nexletta.com',type:'In-person',specialties:['Orthopedics / General IME','Neurology'],hours:{Mon:{open:'09:00',close:'17:00'},Tue:{open:'09:00',close:'17:00'},Wed:{open:'09:00',close:'17:00'},Thu:{open:'09:00',close:'17:00'},Fri:{open:'09:00',close:'17:00'}},notes:'Parking in Lot B. Check in at front desk.',mapsLink:'https://maps.google.com/?q=500+Medical+Center+Blvd+Dallas+TX',mapsOverride:'',status:'Active'},
+  {id:'LOC-02',name:'Nexletta Clinic — Austin',street:'1200 Congress Ave',city:'Austin',state:'TX',zip:'78701',contact:'(512) 555-0200',fax:'',email:'austin@nexletta.com',type:'Hybrid',specialties:['General Medicine'],hours:{Mon:{open:'08:00',close:'16:00'},Wed:{open:'08:00',close:'16:00'},Fri:{open:'08:00',close:'16:00'}},notes:'Suite 400, elevator access.',mapsLink:'https://maps.google.com/?q=1200+Congress+Ave+Austin+TX',mapsOverride:'',status:'Active'},
+  {id:'LOC-03',name:'Telehealth',street:'',city:'',state:'',zip:'',contact:'(800) 555-0300',fax:'',email:'telehealth@nexletta.com',type:'Telehealth',specialties:['Psychology / PTSD','Neurology'],hours:{Mon:{open:'09:00',close:'17:00'},Tue:{open:'09:00',close:'17:00'},Wed:{open:'09:00',close:'17:00'},Thu:{open:'09:00',close:'17:00'},Fri:{open:'09:00',close:'17:00'}},notes:'Secure room link sent at booking.',mapsLink:'',mapsOverride:'',status:'Active'}
+];
+let REF_ORG_DATA = [
+  {id:'ORG-01',name:'American Legion VSO — Chapter 42',type:'VSO',contact:'P. Daniels',contactEmail:'p.daniels@legion.org',contactPhone:'(555) 100-2000',billingContact:'P. Daniels',billingMode:'Standard',billingPeriod:'—',address:'100 Main St, Dallas, TX',status:'Active'},
+  {id:'ORG-02',name:'Torres & Associates Law Firm',type:'Law Firm',contact:'M. Torres',contactEmail:'m.torres@torreslaw.com',contactPhone:'(555) 200-3000',billingContact:'Billing Dept',billingMode:'Deferred',billingPeriod:'Monthly',address:'200 Legal Plaza, Houston, TX',status:'Active'},
+  {id:'ORG-03',name:'Veterans Referral Agency',type:'Referral Agency',contact:'K. Ruiz',contactEmail:'k.ruiz@vra.org',contactPhone:'(555) 300-4000',billingContact:'K. Ruiz',billingMode:'Standard',billingPeriod:'—',address:'300 Referral Way, San Antonio, TX',status:'Active'}
+];
+let CASE_TYPE_DATA = [
+  {name:'Nexus Letter',visit:'No visit required',duration:'—',price:450,sla:'10 business days',status:'Active'},
+  {name:'IME Single',visit:'In-person / Telehealth',duration:'60 min',price:650,sla:'14 business days',status:'Active'},
+  {name:'IME Complex',visit:'In-person',duration:'90 min',price:900,sla:'14 business days',status:'Active'},
+  {name:'DBQ',visit:'May require visit',duration:'30 min',price:900,sla:'10 business days',status:'Active'},
+  {name:'Rebuttal',visit:'No visit required',duration:'—',price:550,sla:'10 business days',status:'Active'},
+  {name:'TDIU',visit:'No visit required',duration:'—',price:750,sla:'10 business days',status:'Active'},
+  {name:'Custom',visit:'Configurable',duration:'—',price:0,sla:'Configurable',status:'Active'}
+];
+let TEMPLATE_DATA = [
+  {name:'PTSD DBQ',category:'Evaluation Forms',caseType:'DBQ',output:'DBQ PDF Mapper',status:'Active'},
+  {name:'Nexus Letter Opinion',category:'Evaluation Forms',caseType:'Nexus Letter',output:'HTML generation',status:'Active'},
+  {name:'Records Review Layout — MSK',category:'Records Review Layouts',caseType:'All',output:'—',status:'Active'},
+  {name:'Report Cover Sheet',category:'Report & Output Documents',caseType:'All',output:'Output generation',status:'Active'},
+  {name:'Report Delivery Email',category:'Veteran Communications',caseType:'All',output:'Merge fields',status:'Active'},
+  {name:'Provider Cover Letter',category:'Internal Letters',caseType:'All',output:'Merge fields',status:'Active'}
+];
+function refOrgList(){ return ['None',...REF_ORG_DATA.filter(o=>o.status==='Active').map(o=>o.name),'Other']; }
+function locationList(){ return LOCATION_DATA.filter(l=>l.status==='Active').map(l=>l.name); }
+function defaultHours(){ const h={}; WEEKDAYS.forEach(d=>{h[d]={open:'09:00',close:'17:00'};}); return h; }
+
+/* Runtime per-case / per-veteran state */
+const caseRecords = {};
+const caseAttachments = {};
+const vetRecordChecklist = {};
+const vetPOA = {'VET-10482':'Verified by staff','VET-9876':'Verified by staff'};
+const vetNotes = {personalStatement:'I served in Iraq 2004-2006. My knee pain began during deployment…',staffQuestions:[{q:'Please describe when you first noticed PTSD symptoms.',a:'Started approximately 3 months after return from deployment…',answered:true}]};
+const vetPaymentSubmitted = {};
+const vetReportsDelivered = [
+  {type:'Knee DBQ',contentions:'Right Knee',mrn:'NXL-2025-0410',date:'Jul 2, 2025'},
+  {type:'Nexus Letter',contentions:'Tinnitus',mrn:'NXL-2025-0410',date:'Jul 2, 2025'}
+];
+let providerBlockedDays = ['Fri'];
+let providerAvailDays = ['Mon','Tue','Wed','Thu'];
+let staffNotifs = [{t:'New document uploaded',d:'NXL-2026-0089 — STR',u:1},{t:'Evaluation submitted',d:'NXL-2026-0055 — Pending QA',u:1}];
+
+function initCaseRecords(mrn){
+  if(!caseRecords[mrn]){
+    const uploaded = mrn==='NXL-2026-0089'?['STR','PMR']:[] ;
+    caseRecords[mrn] = DOC_CATS.filter(d=>d.code!=='REPORT').map(d=>({
+      code:d.code,name:d.name,by:d.by,status:uploaded.includes(d.code)?'Uploaded (pending staff review)':'Not Uploaded',triaged:false,category:d.code
+    }));
+  }
+  return caseRecords[mrn];
+}
+function initVetChecklist(vetId){
+  if(!vetRecordChecklist[vetId]){
+    vetRecordChecklist[vetId] = {STR:'Uploaded (pending staff review)',PMR:'Not Uploaded',VAMC:'Not Uploaded',PRIV:'Not Uploaded',CP:'Not Uploaded','C-File':'Not Uploaded',CORR:'Not Uploaded'};
+  }
+  return vetRecordChecklist[vetId];
+}
+function initCaseAttachments(mrn){
+  if(!caseAttachments[mrn] && mrn==='NXL-2026-0089'){
+    caseAttachments[mrn]=[
+      {n:'STR_Martinez_2004-2006.pdf',cat:'STR',by:'James R. Martinez',date:'Jul 1, 2026'},
+      {n:'DD214.pdf',cat:'PMR',by:'James R. Martinez',date:'Jul 1, 2026'}
+    ];
+  }
+  if(!caseAttachments[mrn]) caseAttachments[mrn]=[];
+  return caseAttachments[mrn];
+}
+
+function cap(s){ return (s||'').charAt(0).toUpperCase()+(s||'').slice(1); }
+function todayStr(){ return '07/01/26'; }
+function todayFull(){ return 'Jul 1, 2026'; }
+function nextTaskId(){ return 'TSK-'+(100+TASKS.length); }
+function nextMrn(){ return 'NXL-2026-'+(String(100+CASES.length).padStart(4,'0')); }
+function nextVeteranId(){ return 'VET-'+(10482+VETERANS.length); }
+function nextClientId(){ return 'CLI-'+(8821+VETERANS.length); }
+function nextApptId(){ return 'APT-'+(300+APPOINTMENTS.length); }
+function nextInvId(){ return 'INV-2026-'+(String(441+INVOICES.length).padStart(4,'0')); }
+function nextProviderId(){ return 'PRV-'+(String(1+PROVIDERS.length).padStart(3,'0')); }
+function nextOrgId(){ return 'ORG-'+(String(REF_ORG_DATA.length+1).padStart(2,'0')); }
+function nextLocId(){ return 'LOC-'+(String(LOCATION_DATA.length+1).padStart(2,'0')); }
+function fv(id){ const el=document.getElementById(id); return el?(el.type==='checkbox'?el.checked:el.value):''; }
+function fvs(id){ return Array.from(document.getElementById(id)?.selectedOptions||[]).map(o=>o.value); }
+function val(id){ return (fv(id)||'').trim(); }
+function sel(id){ return fv(id); }
+function bpAcc(title, inner){ return `<div class="collapse-panel"><div class="collapse-head">${title}</div><div class="collapse-body">${inner}</div></div>`; }
+function bpList(items){ return `<ul class="doc-list">${items.map(i=>`<li>${i}</li>`).join('')}</ul>`; }
+function taskCat(name){ const c=TASK_CATEGORIES.find(x=>x.name===name)||{color:'#6c757d'}; return `<span class="task-cat" style="background:${c.color}22;color:${c.color}"><span class="dot" style="background:${c.color}"></span>${name}</span>`; }
+function toast(msg,type){ alert((type==='error'?'⚠ ':'✓ ')+msg); }
+function mapsFromAddress(street,city,state,zip){ return 'https://maps.google.com/?q='+encodeURIComponent([street,city,state,zip].filter(Boolean).join(', ')); }
+function getActiveVetId(){
+  if(state.vetUser==='representative'&&state.selectedVeteran) return state.selectedVeteran;
+  return 'VET-10482';
+}
+function getActiveCaseMrn(){
+  const vid=getActiveVetId();
+  const v=VETERANS.find(x=>x.veteranId===vid);
+  const c=CASES.find(x=>x.veteranId===vid);
+  return c?c.mrn:(v?'NXL-2026-0089':null);
+}
+
+/* Nav (bootstrap-icons; HCMD react-bootstrap-icons) */
+const STAFF_NAV = [
+  {id:'dashboard',label:'Dashboard',icon:'bi-laptop',roles:['Admin','Scheduler','Biller','Reviewer']},
+  {id:'cases',label:'Cases',icon:'bi-folder2-open',roles:['Admin','Scheduler','Biller','Reviewer']},
+  {id:'veterans',label:'Veterans',icon:'bi-people',roles:['Admin','Scheduler','Biller','Reviewer']},
+  {id:'appointments',label:'Appointments',icon:'bi-calendar2-event',roles:['Admin','Scheduler']},
+  {id:'providers',label:'Providers',icon:'bi-clipboard2-pulse',roles:['Admin','Scheduler','Biller','Reviewer']},
+  {id:'billing',label:'Billing',icon:'bi-receipt',roles:['Admin','Biller']},
+  {id:'qa',label:'QA Reviews',icon:'bi-patch-check',roles:['Admin','Reviewer']},
+  {id:'tasks',label:'Tasks',icon:'bi-card-checklist',roles:['Admin','Scheduler','Biller','Reviewer']},
+  {id:'announcements',label:'Announcements',icon:'bi-megaphone',roles:['Admin','Scheduler','Biller','Reviewer']},
+  {id:'admin',label:'Admin',icon:'bi-database-check',roles:['Admin']}
+];
+const PROVIDER_NAV = [
+  {id:'p-dashboard',label:'Dashboard',icon:'bi-laptop'},{id:'p-cases',label:'My Cases',icon:'bi-folder2'},
+  {id:'p-calendar',label:'Calendar',icon:'bi-calendar-week'},{id:'p-eval',label:'Evaluations Queue',icon:'bi-ui-checks'},
+  {id:'p-tasks',label:'Tasks',icon:'bi-card-checklist'},{id:'p-earnings',label:'My Earnings',icon:'bi-cash-coin'},
+  {id:'p-announcements',label:'Announcements',icon:'bi-megaphone'},{id:'p-help',label:'Help & Support',icon:'bi-question-circle'}
+];
+const VETERAN_NAV = [
+  {id:'v-dashboard',label:'Dashboard',icon:'bi-laptop'},{id:'v-managed',label:'Managed Veterans',icon:'bi-people',repOnly:true},
+  {id:'v-case',label:'Case',icon:'bi-folder'},{id:'v-records',label:'Records',icon:'bi-file-earmark-arrow-up'},
+  {id:'v-notes',label:'Notes',icon:'bi-chat-left-text'},{id:'v-appointments',label:'Appointments',icon:'bi-calendar-event'},
+  {id:'v-billing',label:'Billing',icon:'bi-receipt'},{id:'v-reports',label:'Reports',icon:'bi-file-earmark-medical'}
+];
+
+/* Case info popup tabs (HCMD PatientInfoModal / rounding-sheet form pattern) */
+const CASE_INFO_TABS = ['Overview','Demographics','Visits','Labs','Imaging','Records',"Veteran's Notes",'Records Review','Transcripts','Alerts','Billing','Documents','Case Manager'];
+
+let state = {
+  portal:null, role:'Admin', vetUser:'veteran', page:'dashboard',
+  caseFilter:'All', openCase:null, caseTab:'Overview', selectedVeteran:null,
+  adminTab:'Users', userGroupFilter:'All',
+  addUser:{step:1, group:'Admin', superAdmin:false, editEmail:null, form:{}},
+  createCase:{}, newVeteran:{}, newLocation:{}, newOrg:{}, newProvider:{step:1,data:{}}, bookAppt:{step:1,data:{}},
+  editAnnouncement:null, evalQueueTab:'To Complete', providerCaseFilter:'All',
+  caseModal:null, caseModalTab:'Overview', attachedForms:{},
+  taskView:'Board', taskStatusFilter:'All', taskCatFilter:'All', taskDetail:null, taskDetailTab:'Task Info', todoCase:null,
+  locationView:'table', editLocationId:null, editUserEmail:null, markPaidId:null, _phiAck:false
+};
+
+function chip(status){
+  const map={
+    'Pending Records':'chip-info','Records complete':'chip-info','Pending Pre-Review':'chip-purple',
+    'Pre-Review completed':'chip-purple','Pending Payment':'chip-amber','In progress':'chip-purple',
+    'Pending QA Review':'chip-info','Ready':'chip-green','Complete':'chip-green','Recon':'chip-amber',
+    'On Hold':'chip-red','Cancelled':'chip-grey','Scheduled':'chip-info','Completed':'chip-green',
+    'N/A':'chip-grey','Pending':'chip-amber','Paid':'chip-green','Overdue':'chip-red','Active':'chip-green',
+    'On Leave':'chip-amber','High':'chip-amber','Medium':'chip-info','Open':'chip-purple','Inactive':'chip-grey',
+    'Uploaded (pending staff review)':'chip-info','Verified by staff':'chip-green','Not Uploaded':'chip-grey','Triaged':'chip-green',
+    'Provider':'chip-info','Veteran':'chip-green','Representative':'chip-amber',
+    'Admin':'chip-purple','Scheduler':'chip-info','Biller':'chip-amber','Reviewer':'chip-green',
+    'Super Admin':'chip-red','User':'chip-grey'
+  };
+  return `<span class="chip ${map[status]||'chip-grey'}"><span class="pip"></span>${status}</span>`;
+}
+
+function canAccess(moduleId){
+  if(state.portal!=='staff') return true;
+  const m=STAFF_NAV.find(x=>x.id===moduleId);
+  return m && m.roles.includes(state.role);
+}
+
+function renderRail(){
+  const el=document.getElementById('navigation');
+  let items=[];
+  if(state.portal==='staff') items=STAFF_NAV.filter(n=>n.roles.includes(state.role));
+  else if(state.portal==='provider') items=PROVIDER_NAV;
+  else { const rep=state.vetUser==='representative'; items=VETERAN_NAV.filter(n=>!n.repOnly||rep); }
+  el.innerHTML=`<div class="rail-logo">N</div>`+
+    items.map(n=>`<div class="rail-item ${state.page===n.id?'active':''}" data-page="${n.id}">
+      <i class="bi ${n.icon}"></i><span class="rail-tip">${n.label}</span></div>`).join('');
+  el.querySelectorAll('.rail-item').forEach(i=>i.onclick=()=>{state.page=i.dataset.page;state.openCase=null;render();});
+}
+
+function navTabs(tabs, active, onclickName){
+  return `<div class="dashboard-nav"><div class="nav-tabs">${tabs.map(t=>
+    `<button class="nav-link-tab ${t===active?'active':''}" onclick="${onclickName}('${String(t).replace(/'/g,"\\'")}')">${t}</button>`).join('')}</div></div>`;
+}
+
+/* ═══ STAFF PAGES ═══ */
+function staffDashboard(){
+  const counts={};STATUSES.forEach(s=>counts[s]=CASES.filter(c=>c.status===s).length);
+  return `<h2 class="page-title">Dashboard</h2>
+  <p class="page-lead">Live snapshot of pipeline, SLA risk, revenue, and personal tasks.</p>
+  <div class="grid k4">
+    <div class="card"><h4>Pending Records</h4><div class="kpi">${counts['Pending Records']}</div></div>
+    <div class="card"><h4>In progress</h4><div class="kpi">${counts['In progress']}</div></div>
+    <div class="card"><h4>Pending QA Review</h4><div class="kpi">${counts['Pending QA Review']}</div></div>
+    <div class="card"><h4>SLA at Risk</h4><div class="kpi" style="color:var(--emergency-color)">1</div></div>
+  </div>
+  <div class="grid k2" style="margin-top:14px">
+    <div class="card"><div class="card-header-bar">Pipeline by Stage</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${STATUSES.map(s=>`<span style="font-size:12px">${s}: <strong>${counts[s]||0}</strong></span>`).join(' · ')}</div></div>
+    <div class="card"><div class="card-header-bar">Quick Actions</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        ${canAccess('cases')?'<button class="btn btn-primary btn-sm" onclick="openModal(\'createCase\')">Create New Case</button>':''}
+        ${canAccess('appointments')?'<button class="btn btn-ghost btn-sm" onclick="goPage(\'appointments\')">View Today\'s Appointments</button>':''}
+        ${canAccess('qa')?'<button class="btn btn-ghost btn-sm" onclick="goPage(\'qa\')">Open QA Queue</button>':''}
+      </div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><div class="card-header-bar">Recent Activity</div>
+    <table class="data"><thead><tr><th>Time</th><th>Event</th><th>Case</th></tr></thead><tbody>
+      <tr><td>Today 9:14 AM</td><td>Document uploaded (STR)</td><td>NXL-2026-0089</td></tr>
+      <tr><td>Today 8:02 AM</td><td>Evaluation submitted</td><td>NXL-2026-0055</td></tr>
+      <tr><td>Yesterday</td><td>Payment confirmed</td><td>NXL-2026-0091</td></tr>
+    </tbody></table></div>
+  ${bpAcc('Pipeline & Operational Snapshot', bpList(['<strong>Pipeline stats:</strong> Count at each of the 12 statuses — '+STATUSES.join(', '),'<strong>Overdue / SLA at risk:</strong> Cases approaching or past SLA deadline','<strong>Revenue summary:</strong> Invoiced vs collected (weekly/monthly)','<strong>Tasks card:</strong> Open tasks assigned to logged-in user','<strong>Quick actions:</strong> Create New Case, View Today\'s Appointments, Open QA Queue']))}
+  <div class="card" style="margin-top:14px"><div class="card-header-bar">My Open Tasks</div>
+  ${TASKS.filter(t=>t.status!=='finished').slice(0,4).map(t=>`<div style="font-size:13px;padding:6px 0;border-bottom:1px solid var(--header-border-color)">${t.title} · ${chip(t.status)} · Due ${t.due}</div>`).join('')||'<p style="margin:0;font-size:13px;color:var(--text-70)">No open tasks.</p>'}</div>`;
+}
+
+function caseActions(mrn){
+  return `<td class="actions-cell" onclick="event.stopPropagation()">
+    <i class="bi bi-list-task" title="Todo" onclick="openTodo('${mrn}')"></i>
+    <i class="bi bi-sticky" title="Note" onclick="alert('Sticky note (prototype)')"></i>
+    <i class="bi bi-paperclip" title="Attachment" onclick="openCaseModal('${mrn}');setCaseModalTab('Documents')"></i>
+    <i class="bi bi-pencil-square" title="Edit / Open" onclick="openCaseModal('${mrn}')"></i>
+  </td>`;
+}
+function caseNameCell(c){
+  const openTodos=TASKS.filter(t=>t.caseMrn===c.mrn && t.status!=='finished').length;
+  const badges=[];
+  if(c.status==='Pending Records') badges.push('<span class="mini-badge new">New</span>');
+  badges.push(`<span class="mini-badge">${c.type}</span>`);
+  if(openTodos) badges.push(`<span class="mini-badge amber">${openTodos} todo${openTodos>1?'s':''}</span>`);
+  return `<td><strong>${c.name}</strong><div class="cell-badges">${badges.join('')}</div></td>`;
+}
+function staffCases(){
+  const filtered=state.caseFilter==='All'?CASES:CASES.filter(c=>c.status===state.caseFilter);
+  return `<h2 class="page-title">Cases</h2>
+  <p class="page-lead">Rounding-sheet-style Veteran Cases grid (HCMDDataGridPro · standard density · striped-purple rows). Row actions mirror the rounding sheet: Todo, Note, Attachment, Edit.</p>
+  <div class="toolbar"><input type="search" placeholder="Search veteran name, MRN, client ID…"/>
+    ${canAccess('cases')&&['Admin','Scheduler'].includes(state.role)?'<button class="btn btn-primary" onclick="openModal(\'createCase\')"><i class="bi bi-plus-lg"></i> Create Case</button>':''}</div>
+  ${navTabs(['All',...STATUSES],state.caseFilter,'setCaseFilter')}
+  <table class="data stripe-table"><thead><tr><th>Actions</th><th>Case ID / MRN</th><th>Veteran</th><th>Referring Org</th><th>Case Type</th><th>Status</th><th>Provider</th><th>SLA Due</th><th>Payment</th></tr></thead><tbody>
+  ${filtered.map(c=>`<tr class="selectable" onclick="openCaseModal('${c.mrn}')">${caseActions(c.mrn)}<td><strong>${c.mrn}</strong></td>${caseNameCell(c)}<td>${c.org}</td><td>${c.type}</td><td>${chip(c.status)}</td><td>${c.provider}</td><td>${c.sla}</td><td>${c.payment}</td></tr>`).join('')}
+  </tbody></table>
+  ${bpAcc('Case List View', bpList(['Rounding-sheet grid: Veteran Cases with standard density &amp; striped-purple rows','Row actions: Todo, Note, Attachment, Edit / Open Case Info popup','Status filter tabs for all 12 internal statuses','Search by veteran name, MRN, client ID']))}
+  ${bpAcc('Case Info Popup — Tabbed Intake (13 tabs + dynamic forms)', bpList(CASE_INFO_TABS.map(t=>'<strong>'+t+'</strong> — case-scoped module per blueprint').concat(['<strong>Add New</strong> — attach connected form templates (DBQ, opinion letter, records-review layout)'])))}
+  ${bpAcc('Multi-Case Workspace Behavior', bpList(['Module switching: navigate to Appointments, Billing, Tasks, or QA and return to same case state','Status transitions require reason for Recon, On Hold, Cancelled','Billing Mode: Standard vs Deferred per referring org']))}`;
+}
+
+/* Alerts / Todo tab inside case info popup — linked tasks */
+function caseAlertsPanel(c){
+  const linked=TASKS.filter(t=>t.caseMrn===c.mrn);
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <strong>Alerts &amp; Todos for ${c.name}</strong>
+      <button class="btn btn-primary btn-sm" onclick="openTodo('${c.mrn}')"><i class="bi bi-list-task"></i> Create Todo</button></div>
+    ${linked.length?`<table class="data"><thead><tr><th>Task</th><th>Priority</th><th>Status</th><th>Due</th><th></th></tr></thead><tbody>
+      ${linked.map(t=>`<tr><td>${t.title}</td><td><span class="status-pill" style="background:${TASK_PRIORITY_COLORS[t.priority]}22;color:${TASK_PRIORITY_COLORS[t.priority]}"><span class="dot" style="background:${TASK_PRIORITY_COLORS[t.priority]}"></span>${cap(t.priority)}</span></td>
+      <td><span class="status-pill" style="background:${TASK_STATUS_COLORS[t.status]}22;color:${TASK_STATUS_COLORS[t.status]}"><span class="dot" style="background:${TASK_STATUS_COLORS[t.status]}"></span>${t.status}</span></td>
+      <td>${t.due}</td><td><button class="btn btn-ghost btn-sm" onclick="closeCaseModal();openTaskDetail('${t.id}')">View Task</button></td></tr>`).join('')}
+    </tbody></table>`:'<p style="font-size:13px;color:var(--text-70)">No todos linked to this case yet. Create one — it will also appear on the Tasks board.</p>'}`;
+}
+
+/* Shared case tab panels (used by case info popup + provider workspace) */
+function renderCasePanel(c, tab){
+  switch(tab){
+    case 'Overview': return `<div class="form-grid">
+      <div class="field"><label>Current Status</label><div>${chip(c.status)}</div></div>
+      <div class="field"><label>Assigned Provider</label><select id="case-provider-${c.mrn}"><option value="">— Unassigned —</option>${PROVIDERS.map(p=>`<option ${c.provider===p.name?'selected':''}>${p.name}</option>`).join('')}</select></div>
+      <div class="field"><label>Assigned Reviewer</label><select id="case-reviewer-${c.mrn}">${USERS.filter(u=>u.group==='Reviewer'||u.group==='Admin').map(u=>`<option ${c.reviewer===u.name.split(' ').map((w,i)=>i===0?w[0]+'.':w).join(' ')||c.reviewer===u.name?'selected':''}>${u.name}</option>`).join('')}</select></div>
+      <div class="field"><label>SLA Due Date</label><input id="case-sla-${c.mrn}" value="${c.sla==='—'?'':c.sla}"/></div>
+      <div class="field"><label>Billing Mode</label><select id="case-billing-${c.mrn}"><option ${c.billingMode==='Standard'?'selected':''}>Standard</option><option ${c.billingMode==='Deferred'?'selected':''}>Deferred</option></select></div>
+      <div class="field"><label>Payment Status</label><select id="case-payment-${c.mrn}"><option ${c.payment==='—'?'selected':''}>—</option><option ${c.payment==='Pending'?'selected':''}>Pending</option><option ${c.payment==='Paid'?'selected':''}>Paid</option><option ${c.payment==='Deferred'?'selected':''}>Deferred</option></select></div>
+      <div class="field full"><label>Status Transition (authorized staff)</label>
+        <select id="case-status-${c.mrn}" class="form-control" onchange="toggleStatusReason('${c.mrn}')">${STATUSES.map(s=>`<option ${s===c.status?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="field full" id="status-reason-${c.mrn}" style="display:${['Recon','On Hold','Cancelled'].includes(c.status)?'block':'none'}"><label>Reason (required for Recon / On Hold / Cancelled)</label>
+        <input id="case-reason-${c.mrn}" class="form-control" placeholder="Enter reason…" value="${c.statusReason||''}"/></div>
+      <div class="field full"><button class="btn btn-primary btn-sm" onclick="applyCaseStatus('${c.mrn}')">Apply Status Change</button></div></div>`;
+    case 'Demographics': return `<div class="form-grid">
+      <div class="field"><label>First Name</label><input id="case-fn-${c.mrn}" value="${c.name.split(' ')[0]}"/></div>
+      <div class="field"><label>Last Name</label><input id="case-ln-${c.mrn}" value="${c.name.split(' ').slice(1).join(' ')}"/></div>
+      <div class="field"><label>Date of Birth</label><input id="case-dob-${c.mrn}" value="${c.dob}"/></div>
+      <div class="field"><label>Referring Organization</label><select id="case-org-${c.mrn}">${refOrgList().map(o=>`<option ${o===c.org?'selected':''}>${o}</option>`).join('')}</select></div>
+      <div class="field"><label>Email (login)</label><input value="${c.name.split(' ')[0].toLowerCase()}.${c.name.split(' ').pop().toLowerCase()}@email.com"/></div>
+      <div class="field"><label>Phone</label><input value="(555) 000-0000"/></div>
+      <div class="field full"><label>Mailing Address</label><input value="1234 Veterans Way, Dallas, TX 75201"/></div></div>`;
+    case 'Records': {
+      const recs=initCaseRecords(c.mrn);
+      return recs.map((d,i)=>`<div class="doc-row"><div><span class="tag tag-grey">${d.code}</span> <strong>${d.name}</strong><br><small style="color:var(--text-70)">Uploaded by: ${d.by}</small></div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          ${chip(d.triaged?'Triaged':d.status)}
+          <select id="rec-cat-${i}" style="font-size:12px"><option value="">Assign category…</option>${DOC_CATS.filter(x=>x.code!=='REPORT').map(x=>`<option value="${x.code}" ${d.category===x.code?'selected':''}>${x.code}</option>`).join('')}</select>
+          <button class="btn btn-ghost btn-sm" onclick="triageRecord('${c.mrn}',${i})">Mark Triaged</button>
+        </div></div>`).join('')+
+        `<p style="font-size:12px;color:var(--text-70);margin-top:12px">Staff triage: assign category code (STR/PMR/VAMC/PRIV/CP/C-File/CORR), mark Triaged, flag missing items.</p>`;
+    }
+    case "Veteran's Notes": return `<div class="collapse-panel"><div class="collapse-head">Personal Statement (read-only to staff)</div>
+      <div class="collapse-body"><textarea class="form-control" readonly>I served in Iraq 2004-2006. My knee pain began during deployment…</textarea></div></div>
+      <div class="collapse-panel"><div class="collapse-head">Staff Question (required)</div>
+      <div class="collapse-body"><p style="font-size:13px">Please describe the date and circumstances when you first noticed PTSD symptoms.</p><textarea class="form-control" readonly>Started approximately 3 months after return from deployment…</textarea></div></div>`;
+    case 'Records Review': return `<p class="page-lead">Dynamic reviewer template — collapsibles, evidence blocks, pre-review decision.</p>
+      <div class="collapse-panel"><div class="collapse-head">Pre-Review Conclusion</div>
+      <div class="collapse-body">Evidence sufficient for positive DBQ on PTSD and Right Knee. Tinnitus records incomplete — request additional audiometry.</div></div>`;
+    case 'Billing': return `<table class="data"><thead><tr><th>Invoice ID</th><th>Service</th><th>Amount</th><th>Status</th><th>Due</th><th>Payment Ref</th></tr></thead>
+      <tbody><tr><td>INV-2026-0441</td><td>${c.type}</td><td>$${c.amount}</td><td>${chip(c.payment==='Paid'?'Paid':'Pending')}</td><td>Jul 12, 2026</td><td>${c.payment==='Paid'?'ZL-88213':'—'}</td></tr></tbody></table>
+      <p style="font-size:12px;color:var(--text-70);margin-top:10px">Scoped to this case — invoices, payment status, delays, payment references &amp; billing history.</p>`;
+    case 'Visits': return `<p class="page-lead">Past visits to the practice, including prior encounters, appointments, and reports/DBQs completed during those case lifecycles.</p>
+      <table class="data"><thead><tr><th>Date</th><th>Case</th><th>Visit Type</th><th>Provider</th><th>Report / DBQ produced</th></tr></thead><tbody>
+      <tr><td>Jun 20, 2026</td><td>NXL-2025-0410 (prior)</td><td>DBQ Evaluation</td><td>Dr. Sarah Whitmore, MD</td><td><span class="tag tag-grey">REPORT</span> Knee DBQ (prior case)</td></tr>
+      <tr><td>—</td><td>${c.mrn} (current)</td><td>${c.type}</td><td>${c.provider}</td><td>Pending completion</td></tr>
+      </tbody></table>`;
+    case 'Labs': return `<p class="page-lead">Labs ordered and received by the practice itself. Outside lab reports remain consolidated in Records and summarized in Records Review.</p>
+      <table class="data"><thead><tr><th>Panel</th><th>Ordered</th><th>Status</th><th>Result</th></tr></thead><tbody>
+      <tr><td>CBC</td><td>Jun 29, 2026</td><td>${chip('Completed')}</td><td>Within normal limits</td></tr>
+      <tr><td>Metabolic Panel</td><td>Jun 29, 2026</td><td>${chip('Pending')}</td><td>—</td></tr></tbody></table>`;
+    case 'Imaging': return `<p class="page-lead">Imaging ordered and received by the practice itself. Outside imaging reports remain in Records.</p>
+      <table class="data"><thead><tr><th>Study</th><th>Ordered</th><th>Status</th><th>Impression</th></tr></thead><tbody>
+      <tr><td>Right Knee X-Ray (3 views)</td><td>Jun 30, 2026</td><td>${chip('Completed')}</td><td>Mild degenerative changes</td></tr></tbody></table>`;
+    case 'Transcripts': return `<p class="page-lead">Provider note transcripts, audio files, and text transcripts linked to those audio files — scoped to this case only.</p>
+      <table class="data"><thead><tr><th>File</th><th>Type</th><th>Linked Audio</th><th>Created</th><th>Actions</th></tr></thead><tbody>
+      <tr><td><i class="bi bi-file-earmark-text"></i> ptsd_dictation_transcript.txt</td><td>Text transcript</td><td><i class="bi bi-mic"></i> dictation_0089.mp3</td><td>Jun 30, 2026</td>
+        <td><i class="bi bi-play-circle" title="Play" style="cursor:pointer;margin-right:8px;color:var(--theme-color)"></i><i class="bi bi-download" title="Download" style="cursor:pointer;color:var(--theme-color)"></i></td></tr></tbody></table>`;
+    default: return `<p style="color:var(--text-70)">${tab} — case-scoped module per Staff Portal blueprint.</p>`;
+  }
+}
+
+/* Documents tab (HCMD <Attachment> pattern) */
+function docsPanel(c){
+  const files=initCaseAttachments(c.mrn);
+  return `<div class="card"><div class="card-header-bar">Attachments (${c.name})</div>
+    <div class="toolbar"><input placeholder="Search attachments…"/>
+      <select><option>All Categories</option>${DOC_CATS.map(d=>`<option>${d.code} — ${d.name}</option>`).join('')}</select>
+      <button class="btn btn-primary btn-sm" onclick="addCaseAttachment('${c.mrn}')"><i class="bi bi-plus-lg"></i> Add Attachment</button></div>
+    <table class="data"><thead><tr><th>File</th><th>Category</th><th>Uploaded By</th><th>Date</th><th>Actions</th></tr></thead><tbody>
+    ${files.length?files.map((f,i)=>`<tr><td><i class="bi bi-file-earmark-pdf"></i> ${f.n}</td><td><span class="tag tag-grey">${f.cat}</span></td><td>${f.by}</td><td>${f.date}</td>
+      <td><i class="bi bi-eye" title="View" style="cursor:pointer;margin-right:8px"></i><i class="bi bi-download" title="Download" style="cursor:pointer;margin-right:8px"></i><i class="bi bi-trash" title="Delete" style="cursor:pointer;color:var(--danger)" onclick="deleteCaseAttachment('${c.mrn}',${i})"></i></td></tr>`).join(''):'<tr><td colspan="5" style="color:var(--text-70)">No attachments yet.</td></tr>'}
+    </tbody></table></div>`;
+}
+function addCaseAttachment(mrn){
+  const cat=prompt('Category code (STR/PMR/VAMC/PRIV/CP/C-File/CORR):','STR'); if(!cat)return;
+  initCaseAttachments(mrn).push({n:'upload_'+Date.now()+'.pdf',cat:cat.toUpperCase(),by:actorName(),date:todayFull()});
+  toast('Attachment added to case '+mrn); renderCaseModal();
+}
+function deleteCaseAttachment(mrn,i){ initCaseAttachments(mrn).splice(i,1); renderCaseModal(); }
+function triageRecord(mrn,i){
+  const recs=initCaseRecords(mrn); const cat=document.getElementById('rec-cat-'+i)?.value;
+  if(cat) recs[i].category=cat;
+  recs[i].triaged=true; recs[i].status='Triaged';
+  toast('Document marked Triaged — category '+(cat||recs[i].category)); renderCaseModal();
+}
+function toggleStatusReason(mrn){
+  const sel=document.getElementById('case-status-'+mrn); const wrap=document.getElementById('status-reason-'+mrn);
+  if(sel&&wrap) wrap.style.display=['Recon','On Hold','Cancelled'].includes(sel.value)?'block':'none';
+}
+function applyCaseStatus(mrn){
+  const c=CASES.find(x=>x.mrn===mrn); if(!c)return;
+  const next=document.getElementById('case-status-'+mrn)?.value;
+  const reason=(document.getElementById('case-reason-'+mrn)?.value||'').trim();
+  if(['Recon','On Hold','Cancelled'].includes(next)&&!reason){ toast('Reason is required for '+next,'error'); return; }
+  c.status=next; c.statusReason=reason||'';
+  c.provider=document.getElementById('case-provider-'+mrn)?.value||c.provider;
+  c.reviewer=document.getElementById('case-reviewer-'+mrn)?.value||c.reviewer;
+  c.sla=document.getElementById('case-sla-'+mrn)?.value||c.sla;
+  c.billingMode=document.getElementById('case-billing-'+mrn)?.value||c.billingMode;
+  c.payment=document.getElementById('case-payment-'+mrn)?.value||c.payment;
+  const v=VETERANS.find(x=>x.veteranId===c.veteranId); if(v) v.lastStatus=next;
+  toast('Case updated — status: '+next); renderCaseModal();
+}
+function saveCaseModalFromPopup(mrn){
+  applyCaseStatus(mrn);
+}
+
+/* Case Manager form (HCMD CaseManagerForm pattern, Nexletta-adapted) */
+function caseManagerPanel(c){
+  const yn=(name,label,opts)=>`<div class="field"><label>${label}</label><select><option>-- Select --</option>${opts.map(o=>`<option>${o}</option>`).join('')}</select></div>`;
+  const dt=(label)=>`<div class="field"><label>${label}</label><input type="datetime-local"/></div>`;
+  return `<div class="collapse-panel"><div class="collapse-head">Case Manager — Intake & Coordination</div><div class="collapse-body">
+    <div class="form-grid">
+      <div class="field"><label>Veteran Name</label><input value="${c.name}"/></div>
+      ${yn('status','Status',['Active','Inactive','Pending','Completed'])}
+      ${dt('Date of Consult')}
+      <div class="field"><label>Referring Organization</label><input value="${c.org}"/></div>
+      <div class="field"><label>Assigned Provider / Attending</label><input value="${c.provider}"/></div>
+      ${yn('records_available','Are outside RECORDS AVAILABLE?',['Yes','No','Pending'])}
+      ${dt('Date & time RECORDS became AVAILABLE')}
+      ${dt('Date & time OMR was received')}
+      ${dt('Initial chart created date')}
+      ${yn('family_called','CM — Family called for initial contact?',['Yes','No','Attempted'])}
+      ${dt('Date & time family called')}
+      ${yn('insurance_info','Insurance info added?',['Yes','No','Partial'])}
+      ${dt('Date insurance info added')}
+      <div class="field"><label>Code status on admission</label><select><option>Full Code</option><option>DNR</option><option>DNR/DNI</option><option>Comfort Care</option><option>Limited Code</option></select></div>
+      ${dt('Date of first family meeting with SCS Doctor')}
+      ${yn('picture_added','Picture of veteran added in app?',['Yes','No'])}
+    </div>
+    <div class="field full" style="margin-top:12px"><label>Dictation team remarks on initial chart</label><textarea class="form-control"></textarea></div>
+  </div></div>`;
+}
+
+/* Connected template form (form-builder-like render) */
+function templateFormPanel(c, title){
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <strong>${title}</strong>
+      <div><button class="btn btn-ghost btn-sm" onclick="alert('Generating PDF: ${c.name.replace(/'/g,'')}_${title.replace(/'/g,'')}.pdf')"><i class="bi bi-download"></i> Download PDF</button>
+      <button class="btn btn-danger btn-sm" onclick="detachForm('${c.mrn}','${title.replace(/'/g,"\\'")}')"><i class="bi bi-trash"></i> Delete Form</button></div></div>
+    <div class="collapse-panel"><div class="collapse-head">${title} — Section 1</div><div class="collapse-body"><div class="form-grid">
+      <div class="field"><label>Diagnosis (Text)</label><input placeholder="e.g. Post-Traumatic Stress Disorder"/></div>
+      <div class="field"><label>Date of onset (Date)</label><input type="date"/></div>
+      <div class="field"><label>Nexus opinion (Single select)</label><select><option>At least as likely as not</option><option>More likely than not</option><option>Less likely than not</option></select></div>
+      <div class="field"><label>Is the condition chronic? (Yes/No)</label><select><option>Yes</option><option>No</option></select></div>
+      <div class="field full"><label>Clinical rationale (Long text)</label><textarea class="form-control"></textarea></div>
+      <div class="field full"><label>Signature block</label><button class="btn btn-ghost btn-sm">Typed Signature</button> <button class="btn btn-ghost btn-sm">Draw Signature</button></div>
+    </div></div></div>
+    <p style="font-size:12px;color:var(--text-70)">Connected template rendered from the practice's form builder. On QA approval this generates the flat output PDF (DBQ AcroForm fill or HTML→PDF for opinion letters).</p>`;
+}
+
+/* ═══ CASE INFO POPUP (rounding-sheet style tabbed intake form) ═══ */
+function openCaseModal(mrn){ state.caseModal=mrn; state.caseModalTab='Overview'; renderCaseModal(); }
+function closeCaseModal(){ state.caseModal=null; document.getElementById('modals-root').innerHTML=''; }
+function setCaseModalTab(t){ state.caseModalTab=t; renderCaseModal(); }
+function attachForm(mrn){
+  const sel=document.getElementById('tmpl-select'); if(!sel)return;
+  const t=sel.value; if(!t)return;
+  state.attachedForms[mrn]=state.attachedForms[mrn]||[];
+  if(state.attachedForms[mrn].includes(t)){ toast('Template already attached','error'); return; }
+  state.attachedForms[mrn].push(t);
+  state.caseModalTab=t; toast('Attached template: '+t); renderCaseModal();
+}
+function detachForm(mrn,title){
+  state.attachedForms[mrn]=(state.attachedForms[mrn]||[]).filter(x=>x!==title);
+  state.caseModalTab='Add New'; renderCaseModal();
+}
+function renderCaseModal(){
+  const c=CASES.find(x=>x.mrn===state.caseModal); if(!c){closeCaseModal();return;}
+  const dynamic=state.attachedForms[c.mrn]||[];
+  const tabs=[...CASE_INFO_TABS, ...dynamic, 'Add New'];
+  const active=tabs.includes(state.caseModalTab)?state.caseModalTab:'Overview';
+  let panel;
+  if(active==='Documents') panel=docsPanel(c);
+  else if(active==='Alerts') panel=caseAlertsPanel(c);
+  else if(active==='Case Manager') panel=caseManagerPanel(c);
+  else if(active==='Add New') panel=`<p class="page-lead">Attach a connected form template to this case (DBQ, opinion letter, records-review layout). Each attached template becomes its own tab with a Download PDF and Delete action — exactly like the HCMD patient "Add Form" flow.</p>
+      <div class="toolbar"><select id="tmpl-select" style="min-width:280px">${TEMPLATES.map(t=>`<option>${t}</option>`).join('')}</select>
+      <button class="btn btn-primary" onclick="attachForm('${c.mrn}')"><i class="bi bi-plus-lg"></i> Add Form</button></div>
+      ${dynamic.length?`<p style="font-size:13px">Attached: ${dynamic.map(d=>`<span class="tag">${d}</span>`).join(' ')}</p>`:'<p style="font-size:13px;color:var(--text-70)">No connected templates attached yet.</p>'}`;
+  else if(dynamic.includes(active)) panel=templateFormPanel(c,active);
+  else panel=renderCasePanel(c,active);
+
+  const tabBar=tabs.map(t=>`<button class="nav-link-tab ${active===t?'active':''}" onclick="setCaseModalTab('${t.replace(/'/g,"\\'")}')">${t}${dynamic.includes(t)?' <i class="bi bi-file-earmark-text"></i>':''}</button>`).join('');
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeCaseModal()">
+    <div class="modal-content xl">
+      <div class="modal-header"><h3>Case Info — ${c.mrn}</h3><button onclick="closeCaseModal()"><i class="bi bi-x-lg"></i></button></div>
+      <div class="modal-body">
+        <div class="card" style="margin-bottom:12px;box-shadow:none"><div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center">
+          <div style="width:44px;height:44px;border-radius:50%;background:var(--theme-color-15);color:var(--theme-color);display:flex;align-items:center;justify-content:center;font-weight:700">${c.name.split(' ').map(w=>w[0]).slice(0,2).join('')}</div>
+          <div><strong>${c.name}</strong> ${chip(c.status)}<br><small style="color:var(--text-70)">${c.type} · Client ID ${c.clientId} · Veteran ID ${c.veteranId} · Contentions: ${c.contentions.join(', ')}</small></div>
+        </div></div>
+        <div class="dashboard-nav"><div class="nav-tabs" style="overflow-x:auto">${tabBar}</div></div>
+        <div style="margin-top:12px">${panel}</div>
+      </div>
+      <div class="modal-footer"><button class="btn btn-ghost" onclick="closeCaseModal()">Close</button><button class="btn btn-primary" onclick="submitCaseModalSave('${c.mrn}')">Save</button></div>
+    </div></div>`;
+}
+
+function staffVeterans(){
+  return `<h2 class="page-title">Veterans</h2>
+  <p class="page-lead">Veteran directory — create entries, manage portal accounts (same fields as intake).</p>
+  <div class="toolbar"><input placeholder="Search name, veteran ID, email…"/><button class="btn btn-primary" onclick="openModal('newVeteran')"><i class="bi bi-plus-lg"></i> New Veteran</button></div>
+  <table class="data"><thead><tr><th>Veteran ID</th><th>Client ID</th><th>Name</th><th>DOB</th><th>Referring Org</th><th>Linked Cases</th><th>Last Status</th></tr></thead>
+  <tbody>${VETERANS.map(v=>`<tr><td>${v.veteranId}</td><td>${v.clientId}</td><td>${v.name}</td><td>${v.dob}</td><td>${v.org}</td><td>${v.cases}</td><td>${chip(v.lastStatus)}</td></tr>`).join('')}</tbody></table>
+  ${bpAcc('Veteran Directory Fields', bpList(['Veteran ID, Client ID, Name, DOB, Referring Organization','Linked case count and last known case status','Create veteran portal account (same fields as intake)','Representative linkage managed per veteran']))}`;
+}
+
+function weeklyCalendar(opts){
+  opts=opts||{};
+  const days=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const hours=['8 AM','9 AM','10 AM','11 AM','12 PM','1 PM','2 PM','3 PM','4 PM','5 PM'];
+  let cells='';
+  hours.forEach((h,hi)=>{
+    cells+=`<div class="time">${h}</div>`;
+    days.forEach((d,di)=>{
+      let cls='cell';
+      const blocked=providerBlockedDays.includes(d);
+      const avail=providerAvailDays.includes(d);
+      if(avail&&!blocked&&hi>=1&&hi<=8) cls+=' slot-avail';
+      if(d==='Thu'&&h==='10 AM') cls+=' slot-booked';
+      if(blocked&&hi>=1&&hi<=8) cls+=' slot-blocked';
+      cells+=`<div class="${cls}">${d==='Thu'&&h==='10 AM'?'<small>J. Martinez</small>':''}</div>`;
+    });
+  });
+  const blockBar=opts.blockControls?`<div class="toolbar" style="margin-top:10px"><span style="font-size:13px;margin-right:8px">Block / unblock day:</span>
+    ${days.map(d=>`<button class="btn btn-sm ${providerBlockedDays.includes(d)?'btn-danger':'btn-ghost'}" onclick="providerToggleBlock('${d}')">${d}</button>`).join('')}</div>`:'';
+  return `<div class="google-calendar-container"><div class="cal-grid"><div class="hdr"></div>${days.map(d=>`<div class="hdr">${d}</div>`).join('')}${cells}</div></div>
+  <div class="cal-legend">
+    <span><i style="background:var(--theme-color-10)"></i> Available</span>
+    <span><i style="background:var(--theme-color-15);border-left:3px solid var(--theme-color)"></i> Booked appointment</span>
+    <span><i style="background:rgba(186,54,54,.1)"></i> Blocked / unavailable</span>
+    <span><i style="background:#fff;border:1px solid #dadce0"></i> Outside availability hours</span>
+  </div>${blockBar}`;
+}
+
+function staffAppointments(){
+  return `<h2 class="page-title">Appointments</h2>
+  <p class="page-lead">Book visits tied to provider weekly calendar. Status: Scheduled, Completed, Cancelled, No-show.</p>
+  <div class="toolbar"><button class="btn btn-primary" onclick="openModal('bookAppt')"><i class="bi bi-plus-lg"></i> New Appointment</button></div>
+  <div class="card"><div class="card-header-bar">Provider: Dr. Sarah Whitmore, MD — Weekly Schedule</div>
+  <p style="font-size:12px;color:var(--text-70);margin:0 0 10px">Recurring: Mon–Wed 9:00–17:00 Dallas · Thu Telehealth 10:00–14:00</p>${weeklyCalendar()}</div>
+  <table class="data" style="margin-top:14px"><thead><tr><th>Appt ID</th><th>Veteran</th><th>MRN</th><th>Provider</th><th>Location</th><th>Date & Time</th><th>Status</th></tr></thead>
+  <tbody>${APPOINTMENTS.map(a=>`<tr><td>${a.id}</td><td>${a.name}</td><td>${a.mrn}</td><td>${a.provider}</td><td>${a.location}</td><td>${a.datetime}</td><td>${chip(a.status)}</td></tr>`).join('')}</tbody></table>
+  ${bpAcc('Booking Workflow (6-step wizard)', bpList(['Step 1: Select veteran &amp; case','Step 2: Case type &amp; visit type (IME Evaluation, DBQ Evaluation, Telehealth)','Step 3: Provider &amp; location (respects blocked availability)','Step 4: Date &amp; time from provider calendar slots','Step 5: Appointment notes &amp; confirmation','Step 6: Review &amp; book — status Scheduled']))}
+  ${bpAcc('Appointment Statuses', bpList(['Scheduled','Completed','Cancelled','No-show']))}`;
+}
+
+function staffBilling(){
+  return `<h2 class="page-title">Billing</h2>
+  <p class="page-lead">Milestone-driven invoicing — auto-generated after Pre-Review completed. Manual payment confirmation (Phase 1).</p>
+  <div class="grid k4">
+    <div class="card"><h4>Total Invoiced</h4><div class="kpi">$4,250</div></div>
+    <div class="card"><h4>Total Collected</h4><div class="kpi">$3,600</div></div>
+    <div class="card"><h4>Pending</h4><div class="kpi">$650</div></div>
+    <div class="card"><h4>Overdue</h4><div class="kpi" style="color:var(--emergency-color)">0</div></div>
+  </div>
+  ${navTabs(['All','Pending','Paid','Overdue','Disputed','Voided'],'All','noop')}
+  <table class="data"><thead><tr><th>Invoice ID</th><th>MRN</th><th>Veteran</th><th>Service</th><th>Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
+  <tbody>${INVOICES.map(i=>`<tr><td>${i.id}</td><td>${i.mrn}</td><td>${i.name}</td><td>${i.service}</td><td>$${i.amount}</td><td>${chip(i.status)}</td><td>${i.due}</td><td>${i.status==='Pending'?`<button class="btn btn-gold btn-sm" onclick="openMarkPaid('${i.id}')">Mark as Paid</button>`:''}</td></tr>`).join('')}</tbody></table>
+  <div class="card" style="margin-top:14px"><div class="card-header-bar">Deferred & Periodic Billing</div>
+  <p style="font-size:13px;margin:0">Torres & Associates Law Firm — Monthly · 2 deferred cases · Running total $1,500 · <button class="btn btn-ghost btn-sm">Generate Consolidated Invoice</button></p></div>
+  ${bpAcc('Milestone Invoicing', bpList(['Auto-generated after Pre-Review completed (Standard billing mode)','Manual Mark as Paid with payment reference (Zelle, check #, wire ref)','Payment confirmation advances case from Pending Payment → In progress','Invoice statuses: Pending, Paid, Overdue, Disputed, Voided']))}
+  ${bpAcc('Deferred & Periodic Billing', bpList(['Referring org billing mode: Standard vs Deferred','Billing period: Weekly / Monthly / Per-case','Consolidated invoice at end of billing period — staff review before issuing']))}`;
+}
+
+function staffQA(){
+  const queue=CASES.filter(c=>c.status==='Pending QA Review');
+  const rows=queue.length?queue.map(c=>`<tr><td>${c.mrn}</td><td>${c.name}</td><td>${c.type}</td><td>${c.provider}</td><td>Jun 30, 2026</td>
+  <td><button class="btn btn-primary btn-sm" onclick="qaApprove('${c.mrn}')">Approve</button> <button class="btn btn-ghost btn-sm" onclick="qaReturn('${c.mrn}')">Return for Revision</button></td></tr>`).join('')
+    :'<tr><td colspan="6" style="color:var(--text-70)">No evaluations awaiting QA review.</td></tr>';
+  return `<h2 class="page-title">QA Reviews</h2>
+  <p class="page-lead">Review queue — approve or return evaluations to provider.</p>
+  <table class="data"><thead><tr><th>MRN</th><th>Veteran</th><th>Type</th><th>Provider</th><th>Submitted</th><th></th></tr></thead>
+  <tbody>${rows}</tbody></table>
+  ${bpAcc('QA Review Workflow', bpList(['Queue: Pending QA Review evaluations from providers','Approve → generates flat output PDF(s) via DBQ AcroForm or HTML→PDF','Return for Revision → case status In progress, provider notified, form re-editable','Publish final report to Veteran Portal Reports module after approval']))}`;
+}
+function qaApprove(mrn){
+  const c=CASES.find(x=>x.mrn===mrn); if(!c||c.status!=='Pending QA Review'){ toast('Case not in Pending QA Review','error'); return; }
+  c.status='Ready';
+  const v=VETERANS.find(x=>x.veteranId===c.veteranId); if(v) v.lastStatus='Ready';
+  toast('QA approved — '+mrn+' moved to Ready; output PDF(s) generated');
+  render();
+}
+function qaReturn(mrn){
+  const c=CASES.find(x=>x.mrn===mrn); if(!c||c.status!=='Pending QA Review'){ toast('Case not in Pending QA Review','error'); return; }
+  c.status='In progress';
+  const v=VETERANS.find(x=>x.veteranId===c.veteranId); if(v) v.lastStatus='In progress';
+  toast('Evaluation returned — '+mrn+' back to In progress; provider notified');
+  render();
+}
+
+function staffProviders(){
+  return `<h2 class="page-title">Providers</h2>
+  <p class="page-lead">Contracted examiners — availability, compensation, portal invitations.</p>
+  <div class="toolbar"><button class="btn btn-primary" onclick="openModal('newProvider')"><i class="bi bi-plus-lg"></i> New Provider</button></div>
+  <table class="data"><thead><tr><th>Provider ID</th><th>Name</th><th>Specialty</th><th>Locations</th><th>Cases</th><th>Status</th></tr></thead>
+  <tbody>${PROVIDERS.map(p=>`<tr><td>${p.id}</td><td>${p.name}</td><td>${p.specialty}</td><td>${p.locations}</td><td>${p.cases}</td><td>${chip(p.status)}</td></tr>`).join('')}</tbody></table>
+  ${bpAcc('New Provider Wizard (5 steps)', bpList(['Step 1: Basic info — name, credentials, email, phone','Step 2: License &amp; credentials — license #, state, NPI, specialty','Step 3: Locations — assign practice locations','Step 4: Availability (optional) — recurring weekly schedule or defer to Provider Portal','Step 5: Confirm — Provider Portal invitation emailed']))}
+  ${bpAcc('Provider Detail (staff-only)', bpList(['Compensation ledger: per-case rates, pending vs paid','Internal notes — not visible in Provider Portal','Block entries visible on staff Appointments calendar']))}`;
+}
+
+/* ═══ TASKS — Kanban board (HCMD) ═══ */
+function taskCard(t){
+  const st=TASK_STATUS_COLORS[t.status];
+  const members=t.members||[];
+  const caseLine=t.caseMrn?`<div class="tc-case">Case: ${t.caseMrn} — ${t.patient}</div>`:(t.patient?`<div class="tc-case">Patient: ${t.patient}</div>`:'');
+  return `<div class="task-card" onclick="openTaskDetail('${t.id}')">
+    <button class="tc-menu" title="View Task" onclick="event.stopPropagation();openTaskDetail('${t.id}')"><i class="bi bi-three-dots-vertical"></i></button>
+    ${t.isCreator?'<span class="creator-pill">Creator</span>':''}
+    <div class="tc-title">${t.title}</div>
+    ${caseLine}
+    <div class="tc-cats">${(t.categories||[]).map(taskCat).join('')}</div>
+    <div class="tc-members">${members.slice(0,5).map(m=>`<span class="avatar">${m}</span>`).join('')}${members.length>5?`<span class="avatar more">+${members.length-5}</span>`:''}</div>
+    <div class="tc-metrics"><span title="Comments"><i class="bi bi-chat"></i> ${t.comments}</span><span title="Attachments"><i class="bi bi-paperclip"></i> ${t.attachments}</span><span title="Subtasks"><i class="bi bi-check2-square"></i> ${t.subFin}/${t.subTotal}</span></div>
+    <div class="tc-tags"><span class="ctx-tag">${t.context}</span><span class="type-pill">${t.type==='single'?'Single':t.type==='team'?'Team':'Dept'}</span>
+      <span class="status-pill" style="background:${st}22;color:${st}"><span class="dot" style="background:${st}"></span>${t.status}</span></div>
+    <div class="tc-foot"><span>Created on ${t.created}</span><span class="due-pill ${t.overdue?'overdue':''}">${t.overdue?'Overdue':'Due'} ${t.due}</span></div>
+  </div>`;
+}
+
+function taskFilterToolbar(){
+  return `<div class="task-toolbar">
+    <div class="task-view-toggle">
+      <button class="${state.taskView==='Board'?'active':''}" onclick="setTaskView('Board')">Board</button>
+      <button class="${state.taskView==='Calendar'?'active':''}" onclick="setTaskView('Calendar')">Calendar</button>
+    </div>
+    <select title="Context"><option>All Tasks</option><option>Records Team</option><option>Scheduling</option><option>Billing</option><option>QA Reviews</option></select>
+    <select onchange="setTaskStatusFilter(this.value)">
+      ${['All',...TASK_STATUS_LIST].map(s=>`<option value="${s}" ${state.taskStatusFilter===s?'selected':''}>Status: ${s}</option>`).join('')}
+    </select>
+    <select onchange="setTaskCatFilter(this.value)">
+      <option value="All" ${state.taskCatFilter==='All'?'selected':''}>Select Category</option>
+      ${TASK_CATEGORIES.map(c=>`<option value="${c.name}" ${state.taskCatFilter===c.name?'selected':''}>● ${c.name}</option>`).join('')}
+    </select>
+    <select title="Facility / Case"><option>All Cases</option>${CASES.map(c=>`<option>${c.mrn} — ${c.name}</option>`).join('')}</select>
+    <input type="search" placeholder="Search task"/>
+    <select title="Assignee">${TASK_ASSIGNEE_TOGGLE.map(a=>`<option>${a}</option>`).join('')}</select>
+    <input type="date" title="Created Date"/>
+    <button class="btn btn-ghost btn-sm"><i class="bi bi-sort-down"></i> Sort</button>
+    <div style="flex:1"></div>
+    <button class="btn btn-primary" onclick="openAddTask()"><i class="bi bi-plus-lg"></i> Add Task</button>
+  </div>`;
+}
+
+function subAnalyticsRow(){
+  const watch=TASKS.filter(t=>t.watch);
+  const alerts=TASKS.filter(t=>t.overdue);
+  const followups=TASKS.filter(t=>(t.categories||[]).includes('Follow Up'));
+  const miniList=arr=>arr.length?arr.map(t=>`<div class="sa-item" onclick="openTaskDetail('${t.id}')"><span class="dot" style="background:${TASK_PRIORITY_COLORS[t.priority]}"></span>${t.title}</div>`).join(''):'<div class="sa-empty">No task available</div>';
+  return `<div class="subanalytics">
+    <div class="sa-card"><h5>Watchlist (${watch.length})</h5>${miniList(watch)}</div>
+    <div class="sa-card"><h5>Task Alerts (${alerts.length})</h5>${miniList(alerts)}</div>
+    <div class="sa-card"><h5>Task Follow Ups (${followups.length})</h5>${miniList(followups)}</div>
+    <div class="sa-card good-job"><h5>Good Job!</h5><div style="font-size:26px">🎉</div><p style="font-size:12px;color:var(--text-70);margin:6px 0 0">${TASKS.filter(t=>t.status==='finished').length} tasks finished. Keep it up!</p></div>
+  </div>`;
+}
+
+function tasksBoard(){
+  let list=TASKS.slice();
+  if(state.taskStatusFilter!=='All') list=list.filter(t=>t.status===state.taskStatusFilter);
+  if(state.taskCatFilter!=='All') list=list.filter(t=>(t.categories||[]).includes(state.taskCatFilter));
+  const cols=TASK_PRIORITY_LANES.map(([label,key])=>{
+    const lane=list.filter(t=>t.priority===key);
+    const by=s=>TASKS.filter(t=>t.priority===key&&t.status===s).length;
+    const counts=`Pending ${by('pending')} · Started ${by('started')} · Paused ${by('paused')} · Review ${by('review')} · Finished ${by('finished')}`;
+    return `<div class="kanban-col" style="--lane:${TASK_PRIORITY_COLORS[key]}">
+      <div class="col-head"><div class="lane-name">${label}</div><div class="lane-counts">${counts}</div>
+        <span class="add-task" onclick="openAddTask('${key}')"><i class="bi bi-plus-lg"></i> Add a new Task</span></div>
+      <div class="col-body">${lane.length?lane.map(taskCard).join(''):'<div class="kanban-empty">No task available</div>'}</div>
+    </div>`;
+  }).join('');
+  return `<div class="kanban">${cols}</div>`;
+}
+
+function tasksPage(){
+  const lead=state.portal==='provider'
+    ? 'Providers can create and assign tasks to themselves, staff, or the veteran — same board as the Staff portal.'
+    : 'Kanban board by priority lane (Emergency / Urgent / Routine). Task status: pending, started, paused, finished, review.';
+  return `<h2 class="page-title">Tasks</h2>
+  <p class="page-lead">${lead}</p>
+  ${taskFilterToolbar()}
+  ${subAnalyticsRow()}
+  ${state.taskView==='Board'?tasksBoard():`<div class="card"><div class="card-header-bar">Calendar View</div>${weeklyCalendar()}</div>`}`;
+}
+
+/* Task Detail modal (fullscreen, 8/12 + 4/12) */
+function openTaskDetail(id){ state.taskDetail=id; state.taskDetailTab='Task Info'; renderTaskDetail(); }
+function setTaskDetailTab(t){ state.taskDetailTab=t; renderTaskDetail(); }
+function renderTaskDetail(){
+  const t=TASKS.find(x=>x.id===state.taskDetail); if(!t){closeModal();return;}
+  const tabs=['Task Info','Tracker','Time Logs','Activity Logs','Replies'];
+  const st=TASK_STATUS_COLORS[t.status];
+  let main;
+  if(state.taskDetailTab==='Task Info'){
+    main=`<div class="form-grid">
+      <div class="field"><label>Due Date</label><input id="td-due" type="datetime-local"/></div>
+      <div class="field"><label>Status</label><select id="td-status">${TASK_STATUS_LIST.map(s=>`<option value="${s}" ${s===t.status?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="field full"><label>Subject</label><input id="td-subject" value="${t.title.replace(/"/g,'&quot;')}"/></div>
+      <div class="field"><label>${t.caseMrn?'Case':'Patient / Case'}</label><div>${t.caseMrn?`${t.caseMrn} — ${t.patient}`:'Not linked'}</div></div>
+      <div class="field"><label>CC</label><input id="td-cc" placeholder="Add CC…"/></div>
+      <div class="field full"><label>Description</label><textarea id="td-desc" class="form-control" placeholder="Task description…">${t.description||''}</textarea></div>
+    </div>
+    <div class="collapse-panel" style="margin-top:12px"><div class="collapse-head">Subtasks (${t.subFin}/${t.subTotal})</div><div class="collapse-body">
+      ${t.subTotal?Array.from({length:t.subTotal}).map((_,i)=>`<label style="display:block;font-size:13px"><input type="checkbox" ${i<t.subFin?'checked':''}/> Subtask ${i+1}</label>`).join(''):'<span style="font-size:13px;color:var(--text-70)">No subtasks.</span>'}
+      <div style="margin-top:8px"><input placeholder="Add subtask…" style="max-width:280px"/> <button class="btn btn-ghost btn-sm">Add</button></div>
+    </div></div>`;
+  } else {
+    main=`<div class="banner banner-info">${state.taskDetailTab} — tracker/time/activity/replies stream (prototype placeholder, same layout as HCMD tab).</div>`;
+  }
+  const catList=(t.categories||[]);
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()">
+    <div class="modal-content fullscreen">
+      <div class="modal-header"><h3>Task Details <span class="type-pill">${t.type==='single'?'Single':t.type==='team'?'Team':'Dept'}</span></h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+      <div class="modal-body">
+        <div class="task-detail">
+          <div class="td-main">
+            <div class="dashboard-nav"><div class="nav-tabs">${tabs.map(x=>`<button class="nav-link-tab ${state.taskDetailTab===x?'active':''}" onclick="setTaskDetailTab('${x}')">${x}</button>`).join('')}</div></div>
+            <div style="display:flex;justify-content:flex-end;margin:8px 0"><span class="status-pill" style="background:${st}22;color:${st}"><span class="dot" style="background:${st}"></span>${t.status}</span></div>
+            ${main}
+          </div>
+          <div class="td-side">
+            <div class="side-sec"><h5>Created By</h5><div style="display:flex;align-items:center;gap:8px"><span class="avatar">${(t.creator||'?').split(' ').map(w=>w[0]).join('')}</span> ${t.creator}<span style="margin-left:auto;font-size:11px;color:var(--text-70)">${t.created}</span></div></div>
+            <div class="side-sec"><h5>${t.caseMrn?'Case Name':'Patient / Case'}</h5>${t.caseMrn?`${t.patient} (${t.caseMrn})<br><a onclick="closeModal();openCaseModal('${t.caseMrn}')">View Case History</a>`:'<span style="font-size:13px;color:var(--text-70)">Not linked to a case.</span>'}</div>
+            <div class="side-sec"><h5>Assign Members</h5><div style="font-size:12px;color:var(--text-70)">Assigned Dept: —</div><div class="tc-members" style="margin-top:6px">${(t.members||[]).map(m=>`<span class="avatar">${m}</span>`).join('')}</div></div>
+            <div class="side-sec"><h5>Category</h5>${catList.length?catList.map(taskCat).join(' '):'<span style="font-size:12px;color:var(--text-70)">No categories selected</span>'}</div>
+            <div class="side-sec"><h5>Comments</h5><button class="btn btn-ghost btn-sm"><i class="bi bi-chat"></i> Add Comment</button></div>
+            <div class="side-sec"><h5>Attachments</h5><button class="btn btn-ghost btn-sm"><i class="bi bi-paperclip"></i> Add Attachment</button></div>
+            <div class="side-sec"><h5>Status Notifications</h5>
+              <label style="display:block;font-size:13px"><input type="radio" name="notif" checked/> Status Updates</label>
+              <label style="display:block;font-size:13px"><input type="radio" name="notif"/> Completion Only</label>
+              <label style="display:block;font-size:13px"><input type="radio" name="notif"/> All Activities Updates</label>
+              <label style="display:block;font-size:13px"><input type="radio" name="notif"/> No Notifications</label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="submitTaskDetailSave('${t.id}')">Save Task</button></div>
+    </div></div>`;
+}
+
+/* Add Task modal */
+function openAddTask(priority){ state.addTaskPriority=priority||'routine'; renderAddTask(); }
+function renderAddTask(){
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()">
+    <div class="modal-content xl">
+      <div class="modal-header"><h3>Add Task</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+      <div class="modal-body"><div class="form-grid">
+        <div class="field full"><label>Subject</label><input id="at-subject" placeholder="Subject"/></div>
+        <div class="field"><label>Case (was Patient)</label><select id="at-case"><option value="">— None —</option>${CASES.map(c=>`<option value="${c.mrn}">${c.mrn} — ${c.name}</option>`).join('')}</select></div>
+        <div class="field"><label>Title <span style="color:var(--danger)">*</span></label><input id="at-title" placeholder="Task title (required)"/></div>
+        <div class="field"><label>Task Type</label><select id="at-type">${TASK_TYPES.map(x=>`<option value="${x}">${cap(x)}</option>`).join('')}</select></div>
+        <div class="field"><label>Members (multi)</label><select id="at-members" multiple size="3" style="height:auto">${USERS.map(u=>`<option>${u.name}</option>`).join('')}</select></div>
+        <div class="field"><label>Due Date</label><input id="at-due" type="datetime-local"/></div>
+        <div class="field"><label>Priority</label><select id="at-priority"><option value="routine" ${state.addTaskPriority==='routine'?'selected':''}>Routine</option><option value="urgent" ${state.addTaskPriority==='urgent'?'selected':''}>Urgent</option><option value="emergency" ${state.addTaskPriority==='emergency'?'selected':''}>Emergency</option></select></div>
+        <div class="field"><label>Category</label><select id="at-cat"><option value="">— Select —</option>${TASK_CATEGORIES.map(c=>`<option>${c.name}</option>`).join('')}</select></div>
+      </div></div>
+      <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitAddTask()">Add Task</button></div>
+    </div></div>`;
+}
+function submitAddTask(){
+  const g=id=>document.getElementById(id);
+  const title=(g('at-title').value||g('at-subject').value||'').trim();
+  if(!title){ alert('Title is required'); return; }
+  const mrn=g('at-case').value; const c=CASES.find(x=>x.mrn===mrn);
+  const cat=g('at-cat').value;
+  TASKS.push({id:nextTaskId(), title, priority:g('at-priority').value, status:'pending', type:g('at-type').value, creator:actorName(), isCreator:true, caseMrn:mrn||null, patient:c?c.name:null, categories:cat?[cat]:[], members:['ME'], comments:0, attachments:0, subFin:0, subTotal:0, context:'Ad-hoc', created:todayStr(), due:g('at-due').value?g('at-due').value.slice(5,10).replace('-','/')+'/26':'—', overdue:false, watch:false});
+  closeModal(); render();
+}
+
+/* CreateEditTodo modal (from Veteran Cases grid row) */
+function openTodo(mrn){ state.todoCase=mrn; renderTodoModal(); }
+function renderTodoModal(){
+  const c=CASES.find(x=>x.mrn===state.todoCase); if(!c){closeModal();return;}
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()">
+    <div class="modal-content xl">
+      <div class="modal-header"><h3>Create Todo for ${c.name}, ${c.mrn}, ${CASE_FACILITY}</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+      <div class="modal-body">
+        <label style="display:block;font-size:13px;margin-bottom:12px"><input type="checkbox" id="todo-future"/> Schedule Task For Future</label>
+        <div class="form-grid">
+          <div class="field full"><label>Task <span style="color:var(--danger)">*</span></label><textarea id="todo-task" class="form-control" placeholder="Enter Task details here..."></textarea></div>
+          <div class="field"><label>Group</label><select id="todo-group"><option>Select Group</option><option>Records Team</option><option>Scheduling</option><option>Billing</option><option>QA Reviews</option></select></div>
+          <div class="field"><label>CC</label><select id="todo-cc"><option>Select CC</option>${USERS.map(u=>`<option>${u.name}</option>`).join('')}</select></div>
+          <div class="field"><label>Assignee</label><select id="todo-assignee"><option>Select Assignee</option>${USERS.map(u=>`<option>${u.name}</option>`).join('')}</select></div>
+          <div class="field"><label>Categories</label><select id="todo-cat"><option value="">Categories</option>${TASK_CATEGORIES.map(x=>`<option>${x.name}</option>`).join('')}</select></div>
+          <div class="field"><label>Due Date</label><input id="todo-due" type="datetime-local" placeholder="MM/dd/yyyy h:mm aa"/></div>
+          <div class="field"><label>Priority</label><select id="todo-priority"><option value="routine">Routine</option><option value="urgent">Urgent</option><option value="emergency">Emergency</option></select></div>
+        </div>
+      </div>
+      <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-ghost" onclick="renderTodoModal()">Reset</button><button class="btn btn-primary" onclick="submitTodo()">Create</button></div>
+    </div></div>`;
+}
+function submitTodo(){
+  const c=CASES.find(x=>x.mrn===state.todoCase); if(!c){closeModal();return;}
+  const g=id=>document.getElementById(id);
+  const task=(g('todo-task').value||'').trim(); if(!task){ alert('Task is required'); return; }
+  const cat=g('todo-cat').value; const pr=g('todo-priority').value; const due=g('todo-due').value;
+  TASKS.push({id:nextTaskId(), title:task, priority:pr, status:'pending', type:'single', creator:actorName(), isCreator:true, caseMrn:c.mrn, patient:c.name, categories:cat?[cat]:['Records'], members:['ME'], comments:0, attachments:0, subFin:0, subTotal:0, context:'Case Todo', created:todayStr(), due:due?due.slice(5,10).replace('-','/')+'/26':'—', overdue:false, watch:false});
+  closeModal();
+  toast('Todo created — added to the Tasks board and linked to '+c.mrn);
+  render();
+}
+function submitTaskDetailSave(id){
+  const t=TASKS.find(x=>x.id===id); if(!t){ closeModal(); return; }
+  const title=val('td-subject');
+  if(!title){ toast('Subject is required','error'); return; }
+  t.title=title;
+  t.status=sel('td-status')||t.status;
+  t.description=val('td-desc');
+  const dueEl=document.getElementById('td-due');
+  if(dueEl&&dueEl.value) t.due=dueEl.value.slice(5,10).replace('-','/')+'/26';
+  closeModal(); toast('Task saved'); render();
+}
+function submitCaseModalSave(mrn){
+  const c=CASES.find(x=>x.mrn===mrn); if(!c){ closeCaseModal(); return; }
+  const next=document.getElementById('case-status-'+mrn)?.value;
+  const reason=(document.getElementById('case-reason-'+mrn)?.value||'').trim();
+  if(['Recon','On Hold','Cancelled'].includes(next)&&!reason){ toast('Reason is required for '+next,'error'); return; }
+  c.status=next; c.statusReason=reason||'';
+  c.provider=document.getElementById('case-provider-'+mrn)?.value||'—';
+  c.reviewer=document.getElementById('case-reviewer-'+mrn)?.value||c.reviewer;
+  c.sla=document.getElementById('case-sla-'+mrn)?.value||'—';
+  c.billingMode=document.getElementById('case-billing-'+mrn)?.value||c.billingMode;
+  c.payment=document.getElementById('case-payment-'+mrn)?.value||c.payment;
+  const fnEl=document.getElementById('case-fn-'+mrn);
+  const lnEl=document.getElementById('case-ln-'+mrn);
+  if(fnEl&&lnEl) c.name=(fnEl.value+' '+lnEl.value).trim();
+  const dobEl=document.getElementById('case-dob-'+mrn);
+  if(dobEl) c.dob=dobEl.value;
+  const orgEl=document.getElementById('case-org-'+mrn);
+  if(orgEl) c.org=orgEl.value;
+  const v=VETERANS.find(x=>x.veteranId===c.veteranId);
+  if(v){ v.lastStatus=c.status; if(fnEl&&lnEl) v.name=c.name; if(dobEl) v.dob=c.dob; if(orgEl) v.org=c.org; }
+  closeCaseModal(); toast('Case saved — status: '+c.status); render();
+}
+function createVeteranEntry(opts){
+  const fn=opts.fn, ln=opts.ln, name=fn+' '+ln;
+  const veteranId=nextVeteranId(), clientId=nextClientId();
+  const email=opts.email||fn.toLowerCase()+'.'+ln.toLowerCase()+'@email.com';
+  const v={veteranId,clientId,name,dob:opts.dob||'',gender:opts.gender||'Male',org:opts.org||'None',cases:0,lastStatus:'Pending Records',email,phone:opts.phone||'',address:opts.address||'',rep:opts.rep||'None'};
+  VETERANS.push(v);
+  USERS.push({name,email,group:'Veteran',role:'User',detail:veteranId+' · Org: '+(opts.org||'None'),status:'Active'});
+  initVetChecklist(veteranId);
+  return v;
+}
+
+function actorName(){
+  if(state.portal==='provider') return 'Dr. Sarah Whitmore';
+  if(state.portal==='veteran') return state.vetUser==='representative'?'Michael Torres':'James R. Martinez';
+  return 'Jordan Ellis';
+}
+
+/* ═══ ADMIN PANEL (HCMD SuperAdmin nav-tabs) ═══ */
+function staffAdmin(){
+  return `<div class="card-header-bar" style="margin:0 0 12px;border-radius:.25rem;border:1px solid var(--header-border-color)">Admin Dashboard</div>
+  ${navTabs(ADMIN_TABS, state.adminTab, 'setAdminTab')}
+  <div>${renderAdminTab(state.adminTab)}</div>`;
+}
+function setAdminTab(t){ state.adminTab=t; render(); }
+
+function renderAdminTab(tab){
+  switch(tab){
+    case 'Users': return adminUsers();
+    case 'User Groups': return adminUserGroups();
+    case 'Roles & Permissions': return adminRoles();
+    case 'Notifications': return adminNotifications();
+    case 'Compliance & Security': return adminCompliance();
+    case 'Case Types': return adminCaseTypes();
+    case 'Referral Organizations': return adminRefOrgs();
+    case 'Locations': return adminLocations();
+    case 'Specialties': return adminSpecialties();
+    case 'Dropdown Options': return adminDropdowns();
+    case 'DBQ Library': return adminDbq();
+    case 'Templates': return adminTemplates();
+    case 'Activity Log': return adminActivity();
+    case 'Practice Info': return adminPractice();
+    default: return '';
+  }
+}
+
+/* Unified Users panel with User Group filter */
+function adminUsers(){
+  const filtered=state.userGroupFilter==='All'?USERS:USERS.filter(u=>u.group===state.userGroupFilter);
+  return `<div class="toolbar">
+      <input placeholder="Search user, email, company…"/>
+      <select onchange="setUserGroupFilter(this.value)">
+        ${['All',...USER_GROUPS].map(g=>`<option ${g===state.userGroupFilter?'selected':''}>${g}</option>`).join('')}
+      </select>
+      <select><option>Active</option><option>Inactive</option><option>All statuses</option></select>
+      <div style="flex:1"></div>
+      <button class="btn btn-ghost btn-sm">View Activity Logs</button>
+      <button class="btn btn-primary" onclick="openAddUser()"><i class="bi bi-plus-lg"></i> Add User</button>
+    </div>
+    <p style="font-size:12px;color:var(--text-70);margin:-6px 0 12px">One unified directory for all seven user groups (Admin, Scheduler, Biller, Reviewer, Provider, Veteran, Representative). Role is derived from the group; Super Admin has all access. Filter by User Group above.</p>
+    <table class="data"><thead><tr><th>Name</th><th>Email</th><th>User Group</th><th>Role</th><th>Detail</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+    ${filtered.map(u=>`<tr><td><strong>${u.name}</strong></td><td>${u.email}</td><td>${chip(u.group)}</td><td>${chip(u.role)}</td><td>${u.detail}</td><td>${chip(u.status)}</td>
+      <td><i class="bi bi-pencil" title="Edit" style="cursor:pointer;margin-right:10px" onclick="openEditUser('${u.email.replace(/'/g,"\\'")}')"></i><i class="bi bi-trash" title="Delete" style="cursor:pointer;color:var(--danger)"></i></td></tr>`).join('')}
+    </tbody></table>`;
+}
+function setUserGroupFilter(g){ state.userGroupFilter=g; render(); }
+
+/* User Groups (designation-style CRUD) */
+function adminUserGroups(){
+  return `<div class="toolbar"><input placeholder="Search user group…"/><div style="flex:1"></div>
+      <button class="btn btn-ghost btn-sm">View Activity Logs</button>
+      <button class="btn btn-primary" onclick="openUserGroupAdd()"><i class="bi bi-plus-lg"></i> Add User Group</button></div>
+    <p style="font-size:12px;color:var(--text-70);margin:-6px 0 12px">Seven user groups drive access &amp; portal routing. The main role is derived from the group (Admin group → Admin; all others → User; Super Admin has all access).</p>
+    <table class="data"><thead><tr><th>Group</th><th>Portal</th><th>Derived Role</th><th>Access Scope</th><th>Active</th><th>Actions</th></tr></thead><tbody>
+    ${USER_GROUP_DEFS.map(g=>`<tr><td><span class="tag">${g.name}</span></td><td>${g.portal}</td><td>${chip(g.role)}</td><td>${g.scope}</td><td>${chip(g.active?'Active':'Inactive')}</td>
+      <td><i class="bi bi-pencil" style="cursor:pointer;margin-right:10px" onclick="openUserGroupEdit('${g.name.replace(/'/g,"\\'")}')" title="Edit"></i><i class="bi bi-trash" style="cursor:pointer;color:var(--danger)" onclick="deleteUserGroup('${g.name.replace(/'/g,"\\'")}')" title="Delete"></i></td></tr>`).join('')}
+    </tbody></table>`;
+}
+
+function adminCaseTypes(){
+  return `<div class="toolbar"><button class="btn btn-primary" onclick="openCaseTypeModal()"><i class="bi bi-plus-lg"></i> Add Case Type</button></div>
+    <table class="data"><thead><tr><th>Name</th><th>Visit Type</th><th>Duration</th><th>Base Price</th><th>SLA</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+    ${CASE_TYPE_DATA.map(ct=>`<tr><td>${ct.name}</td><td>${ct.visit}</td><td>${ct.duration}</td><td>$${ct.price}</td><td>${ct.sla}</td><td>${chip(ct.status)}</td><td><i class="bi bi-pencil" style="cursor:pointer" onclick="openCaseTypeModal('${ct.name.replace(/'/g,"\\'")}')" title="Edit"></i></td></tr>`).join('')}
+    </tbody></table>`;
+}
+function openCaseTypeModal(name){
+  const ct=name?CASE_TYPE_DATA.find(x=>x.name===name):null;
+  state.editCaseType=name||null;
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content md">
+    <div class="modal-header"><h3>${ct?'Edit':'Add'} Case Type</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>Name</label><input id="ct-name" value="${ct?ct.name:''}"/></div>
+      <div class="field"><label>Visit Type</label><input id="ct-visit" value="${ct?ct.visit:''}"/></div>
+      <div class="field"><label>Duration</label><input id="ct-duration" value="${ct?ct.duration:''}"/></div>
+      <div class="field"><label>Base Price ($)</label><input id="ct-price" type="number" value="${ct?ct.price:0}"/></div>
+      <div class="field"><label>SLA</label><input id="ct-sla" value="${ct?ct.sla:''}"/></div>
+      <div class="field"><label>Status</label><select id="ct-status"><option ${!ct||ct.status==='Active'?'selected':''}>Active</option><option ${ct&&ct.status==='Inactive'?'selected':''}>Inactive</option></select></div>
+    </div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveCaseType()">Save</button></div></div></div>`;
+}
+function saveCaseType(){
+  const name=fv('ct-name').trim(); if(!name){ toast('Name is required','error'); return; }
+  const payload={name,visit:fv('ct-visit'),duration:fv('ct-duration'),price:Number(fv('ct-price'))||0,sla:fv('ct-sla'),status:fv('ct-status')};
+  if(state.editCaseType){
+    const ct=CASE_TYPE_DATA.find(x=>x.name===state.editCaseType);
+    if(ct) Object.assign(ct,payload);
+    toast('Case type updated: '+name);
+  } else {
+    CASE_TYPE_DATA.push(payload);
+    toast('Case type created: '+name);
+  }
+  closeModal(); render();
+}
+function openTemplateModal(name){
+  const t=name?TEMPLATE_DATA.find(x=>x.name===name):null;
+  state.editTemplate=name||null;
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content md">
+    <div class="modal-header"><h3>${t?'Edit':'New'} Template</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field full"><label>Template Name</label><input id="tm-name" value="${t?t.name:''}"/></div>
+      <div class="field"><label>Category</label><select id="tm-cat"><option ${!t||t.category==='Evaluation Forms'?'selected':''}>Evaluation Forms</option><option ${t&&t.category==='Records Review Layouts'?'selected':''}>Records Review Layouts</option><option ${t&&t.category==='Report & Output Documents'?'selected':''}>Report & Output Documents</option><option ${t&&t.category==='Veteran Communications'?'selected':''}>Veteran Communications</option><option ${t&&t.category==='Internal Letters'?'selected':''}>Internal Letters</option></select></div>
+      <div class="field"><label>Case Type</label><select id="tm-case">${['All',...CASE_TYPES].map(ct=>`<option ${t&&t.caseType===ct?'selected':''}>${ct}</option>`).join('')}</select></div>
+      <div class="field"><label>Output</label><input id="tm-output" value="${t?t.output:''}" placeholder="DBQ PDF Mapper / HTML generation"/></div>
+      <div class="field"><label>Status</label><select id="tm-status"><option ${!t||t.status==='Active'?'selected':''}>Active</option><option ${t&&t.status==='Archived'?'selected':''}>Archived</option></select></div>
+    </div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveTemplate()">Save Template</button></div></div></div>`;
+}
+function saveTemplate(){
+  const name=fv('tm-name').trim(); if(!name){ toast('Template name is required','error'); return; }
+  const payload={name,category:fv('tm-cat'),caseType:fv('tm-case'),output:fv('tm-output'),status:fv('tm-status')};
+  if(state.editTemplate){
+    const t=TEMPLATE_DATA.find(x=>x.name===state.editTemplate);
+    if(t) Object.assign(t,payload);
+    toast('Template updated: '+name);
+  } else {
+    TEMPLATE_DATA.push(payload);
+    toast('Template created: '+name);
+  }
+  closeModal(); render();
+}
+
+function adminRefOrgs(){
+  return `<div class="toolbar"><input placeholder="Search organization…"/><button class="btn btn-primary" onclick="openModal('newOrg')"><i class="bi bi-plus-lg"></i> Add Organization</button></div>
+    <table class="data"><thead><tr><th>Org ID</th><th>Name</th><th>Type</th><th>Primary Contact</th><th>Billing Mode</th><th>Status</th></tr></thead><tbody>
+    ${REF_ORG_DATA.map(o=>`<tr><td>${o.id}</td><td>${o.name}</td><td>${o.type}</td><td>${o.contact}</td><td>${o.billingMode}${o.billingPeriod&&o.billingPeriod!=='—'?' — '+o.billingPeriod:''}</td><td>${chip(o.status)}</td></tr>`).join('')}
+    </tbody></table>`;
+}
+
+function adminLocations(){
+  const view=state.locationView||'table';
+  const toolbar=`<div class="toolbar"><input placeholder="Search location…"/>
+    <div class="task-view-toggle" style="margin-left:auto;margin-right:8px">
+      <button class="${view==='table'?'active':''}" onclick="setLocationView('table')"><i class="bi bi-table"></i> Table</button>
+      <button class="${view==='cards'?'active':''}" onclick="setLocationView('cards')"><i class="bi bi-grid"></i> Cards</button>
+    </div>
+    <button class="btn btn-primary" onclick="openModal('newLocation')"><i class="bi bi-plus-lg"></i> Add Location</button></div>`;
+  if(view==='cards'){
+    return toolbar+`<div class="grid k3">${LOCATION_DATA.map(l=>`<div class="card">
+      <div class="card-header-bar" style="display:flex;justify-content:space-between"><span>${l.name}</span>${chip(l.status)}</div>
+      <p style="font-size:13px;margin:0 0 6px"><strong>${l.type}</strong> · ${(l.specialties||[]).join(', ')||'—'}</p>
+      <p style="font-size:12px;color:var(--text-70);margin:0">${l.street?l.street+', ':''}${l.city}${l.state?', '+l.state:''} ${l.zip||''}</p>
+      <p style="font-size:12px;color:var(--text-70);margin:6px 0 0">${l.contact||''}${l.email?' · '+l.email:''}</p>
+      <div style="margin-top:10px"><button class="btn btn-ghost btn-sm" onclick="editLocation('${l.id}')"><i class="bi bi-pencil"></i> Edit</button></div>
+    </div>`).join('')}</div>`;
+  }
+  return toolbar+`<table class="data"><thead><tr><th>Name</th><th>Address</th><th>Type</th><th>Specialties</th><th>Contact</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+    ${LOCATION_DATA.map(l=>`<tr><td>${l.name}</td><td>${[l.street,l.city,l.state,l.zip].filter(Boolean).join(', ')||'—'}</td><td>${l.type}</td><td>${(l.specialties||[]).join(', ')}</td><td>${l.contact||'—'}</td><td>${chip(l.status)}</td><td><i class="bi bi-pencil" title="Edit" style="cursor:pointer;color:var(--theme-color)" onclick="editLocation('${l.id}')"></i></td></tr>`).join('')}
+    </tbody></table>`;
+}
+
+function adminSpecialties(){
+  return `<div class="toolbar"><button class="btn btn-primary"><i class="bi bi-plus-lg"></i> Add Specialty</button></div>
+    <table class="data"><thead><tr><th>Specialty</th><th>Providers</th><th>Actions</th></tr></thead><tbody>
+    ${SPECIALTIES.map(s=>`<tr><td>${s}</td><td>${PROVIDERS.filter(p=>p.specialty===s).length}</td><td><i class="bi bi-pencil"></i></td></tr>`).join('')}
+    </tbody></table>`;
+}
+
+function adminDropdowns(){
+  const card=(title,items)=>`<div class="card"><div class="card-header-bar">${title}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">${items.map(i=>`<span class="tag tag-grey">${i}</span>`).join('')}</div>
+    <button class="btn btn-ghost btn-sm" style="margin-top:10px"><i class="bi bi-plus-lg"></i> Manage</button></div>`;
+  return `<p class="page-lead">Configurable dropdown option sets (HCMD Dropdown Options pattern).</p>
+    <div class="grid k3">
+      ${card('Document / Attachment Categories', DOC_CATS.map(d=>d.code))}
+      ${card('Block Reasons (Provider)', ['Vacation','Personal Leave','Medical Leave','Training','Conference','Public Holiday','Other'])}
+      ${card('Organization Types', ['VSO','Law Firm','Referral Agency','Healthcare Organization','Other'])}
+      ${card('Appointment Types', ['IME Evaluation','DBQ Evaluation','Telehealth'])}
+      ${card('Task Labels', ['Records','Billing','Scheduling','QA'])}
+      ${card('Contentions', ['PTSD','Right Knee','Tinnitus','Sleep Apnea','Lower Back','Migraine','Hearing Loss'])}
+    </div>
+    <div class="card" style="margin-top:14px"><div class="card-header-bar">Status Display Labels (shown to Veterans — configurable)</div>
+      <table class="data"><thead><tr><th>Internal Status</th><th>Plain-Language Label</th><th>Actions</th></tr></thead><tbody>
+      ${STATUSES.map(s=>`<tr><td>${s}</td><td>${PLAIN_STATUS[s]}</td><td><i class="bi bi-pencil" style="cursor:pointer;color:var(--theme-color)"></i></td></tr>`).join('')}
+      </tbody></table></div>`;
+}
+
+function adminDbq(){
+  return `<div class="toolbar"><button class="btn btn-primary"><i class="bi bi-upload"></i> Upload VA DBQ PDF</button></div>
+    <table class="data"><thead><tr><th>Condition</th><th>PDF Version</th><th>Last Mapping Update</th><th>Last Checked va.gov</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+    <tr><td>PTSD DBQ</td><td>2025-08-12</td><td>Jun 1, 2026</td><td>Jun 1, 2026</td><td>${chip('Active')}</td><td><span style="cursor:pointer;color:var(--theme-color)">Open Mapper</span></td></tr>
+    <tr><td>Musculoskeletal DBQ (Knee)</td><td>2024-11-03</td><td>May 12, 2026</td><td>Dec 1, 2025</td><td>${chip('Needs Review')}</td><td><span style="cursor:pointer;color:var(--theme-color)">Open Mapper</span></td></tr>
+    <tr><td>Tinnitus DBQ</td><td>2025-02-20</td><td>Apr 2, 2026</td><td>Apr 2, 2026</td><td>${chip('Active')}</td><td><span style="cursor:pointer;color:var(--theme-color)">Open Mapper</span></td></tr>
+    </tbody></table>`;
+}
+
+function adminTemplates(){
+  return `<div class="toolbar"><input placeholder="Search template…"/>
+      <select><option>All Categories</option><option>Evaluation Forms</option><option>Records Review Layouts</option><option>Report & Output Documents</option><option>Veteran Communications</option><option>Internal Letters</option></select>
+      <select><option>Active</option><option>Archived</option></select>
+      <button class="btn btn-primary" onclick="openTemplateModal()"><i class="bi bi-plus-lg"></i> New Template</button></div>
+    <table class="data"><thead><tr><th>Template Name</th><th>Category</th><th>Case Type</th><th>Output</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+    ${TEMPLATE_DATA.map(t=>`<tr><td>${t.name}</td><td>${t.category}</td><td>${t.caseType}</td><td><span class="tag tag-grey">${t.output}</span></td><td>${chip(t.status)}</td><td><i class="bi bi-pencil" style="cursor:pointer" onclick="openTemplateModal('${t.name.replace(/'/g,"\\'")}')" title="Edit"></i></td></tr>`).join('')}
+    </tbody></table>
+    <p style="font-size:12px;color:var(--text-70);margin-top:10px">Template Builder components: section header, text, long text, single/multi-select, date, number/scale, Yes/No (conditional), collapsible group, repeatable block, merge fields, signature block. VA-standard DBQs use the <strong>DBQ PDF Mapper</strong> (AcroForm field mapping); custom opinions use HTML generation → Output Document Generation at QA completion. Templates support Duplicate, Archive, and Version history.</p>`;
+}
+
+function adminActivity(){
+  return `<div class="toolbar"><input placeholder="Search by user, record ID, action…"/><select><option>All modules</option><option>Users</option><option>Cases</option><option>Billing</option></select></div>
+    <table class="data"><thead><tr><th>Timestamp</th><th>User</th><th>Action</th><th>Module</th><th>Record ID</th></tr></thead><tbody>
+    <tr><td>Jul 1, 2026 9:14 AM</td><td>A. Nguyen</td><td>Document viewed</td><td>Cases</td><td>NXL-2026-0089</td></tr>
+    <tr><td>Jul 1, 2026 8:40 AM</td><td>Jordan Ellis</td><td>User created</td><td>Users</td><td>Dr. Elena Vasquez</td></tr>
+    <tr><td>Jun 30, 2026 4:22 PM</td><td>C. Brooks</td><td>Invoice marked Paid</td><td>Billing</td><td>INV-2026-0420</td></tr>
+    </tbody></table>`;
+}
+
+function adminPractice(){
+  return `<div class="grid k2">
+    <div class="card"><div class="card-header-bar">Practice Information</div><div class="form-grid">
+      <div class="field"><label>Legal Practice Name</label><input value="Nexletta Medical Evaluations LLC"/></div>
+      <div class="field"><label>DBA Name</label><input value="Nexletta"/></div>
+      <div class="field"><label>NPI</label><input value="1234567890"/></div>
+      <div class="field"><label>License Number</label><input value="TX-PR-0099"/></div>
+      <div class="field full"><label>Main Office Address</label><input value="500 Medical Center Blvd, Dallas, TX 75201"/></div>
+      <div class="field"><label>Primary Email</label><input value="ops@nexletta.com"/></div>
+      <div class="field"><label>Billing Email</label><input value="billing@nexletta.com"/></div>
+    </div></div>
+    <div class="card"><div class="card-header-bar">Portal & Security</div><div class="form-grid">
+      <div class="field"><label>Staff Session Timeout (min)</label><input value="15"/></div>
+      <div class="field"><label>Veteran Session Timeout (min)</label><input value="30"/></div>
+      <div class="field"><label>MFA Enforcement</label><select><option>Staff & Providers</option><option>All users</option><option>Off</option></select></div>
+      <div class="field"><label>Password Expiry (days)</label><input value="90"/></div>
+      <div class="field"><label>Max Failed Logins</label><input value="5"/></div>
+      <div class="field"><label>Default Billing Mode</label><select><option>Standard</option><option>Deferred</option></select></div>
+    </div></div></div>`;
+}
+
+function adminRoles(){
+  const ck=`<span style="color:var(--success);font-weight:700">✔</span>`, cx=`<span style="color:var(--danger)">✖</span>`;
+  const staffRows=[
+    ['Create / edit cases',1,1,0,0],['View all cases',1,1,1,1],['Create veteran accounts',1,1,0,0],
+    ['Book & manage appointments',1,1,0,0],['Assign providers to cases',1,1,0,0],['Triage & categorize documents',1,1,0,1],
+    ['Create & send invoices',1,0,1,0],['Mark invoice as paid',1,0,1,0],['Review & approve evaluations (QA)',1,0,0,1],
+    ['Publish final report to veteran portal',1,0,0,1],['Manage users (create staff accounts)',1,0,0,0],
+    ['Configure case types & forms',1,0,0,0],['View practice settings',1,0,0,0]
+  ];
+  const vetRows=[
+    ['View own case status (plain-language)','✔','✔ (all linked veterans)'],['View past cases and associated reports','✔','✔ (all linked veterans)'],
+    ['Upload documents to own case','✔','✔ (on behalf of linked veterans)'],['Mark records as complete','✔','✔ (POA required first)'],
+    ['Upload POA document','✖','✔ (required per managed veteran)'],['Enter personal statement / notes','✔','✔ (on behalf of)'],
+    ['Answer staff questions','✔','✔ (on behalf of)'],['View invoice for own case','✔','✔ (all linked veterans)'],
+    ["Submit \"I've made payment\" confirmation",'✔','✔ (on behalf of)'],['View appointment details','✔','✔ (all linked veterans)'],
+    ['Join telehealth session (15-min window)','✔','✔'],['Download final reports and DBQs','✔','✔ (all linked veterans)'],
+    ['View Managed Veterans list','✖','✔'],['Edit own profile details','✔','✔'],['Edit case details','✖','✖']
+  ];
+  return `<p class="page-lead">Main RBAC roles: <strong>Super Admin</strong> (all access), <strong>Admin</strong>, <strong>User</strong>. The role is derived from the assigned User Group; the matrices below detail effective permissions.</p>
+  <div class="card"><div class="card-header-bar">Staff Portal Roles</div>
+    <table class="data"><thead><tr><th>Permission</th><th>Admin</th><th>Scheduler</th><th>Biller</th><th>Reviewer</th></tr></thead><tbody>
+    ${staffRows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]?ck:cx}</td><td>${r[2]?ck:cx}</td><td>${r[3]?ck:cx}</td><td>${r[4]?ck:cx}</td></tr>`).join('')}
+    </tbody></table></div>
+  <div class="card" style="margin-top:14px"><div class="card-header-bar">Veteran Portal Roles</div>
+    <table class="data"><thead><tr><th>Permission</th><th>Veteran</th><th>Representative</th></tr></thead><tbody>
+    ${vetRows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+function adminNotifications(){
+  const na=`<span style="color:var(--text-40)">N/A</span>`;
+  const rows=[
+    ['New case created; account credentials sent','Admin ✔',na,'✔'],['Invoice generated',na,na,'✔ (prominent)'],
+    ['Payment confirmed by staff','Biller ✔',na,'✔'],['Veteran/representative uploads document','Scheduler / Reviewer ✔',na,na],
+    ['Client marks records complete','Scheduler / Reviewer ✔',na,na],['Records confirmed complete by staff',na,na,'✔'],
+    ['Staff flags a document (needs attention)',na,na,'✔'],['Staff adds a question to Notes tab',na,na,'✔'],
+    ['Staff re-opens a previously answered question',na,na,'✔'],['Case assigned to provider',na,'✔','✔'],
+    ['Case reassigned to a different provider',na,'✔ (removed)','✔'],['Appointment booked',na,'✔','✔'],
+    ['Appointment rescheduled',na,'✔','✔'],['Appointment cancelled',na,'✔','✔'],
+    ['Evaluation submitted by provider','Reviewer ✔',na,na],['Evaluation returned for revision',na,'✔',na],
+    ['QA approved','Admin ✔','✔',na],['Report published and delivered',na,na,'✔ (prominent)'],
+    ['Case status changed',na,na,'✔ (plain-language)'],['SLA approaching (threshold)','All staff ✔','✔',na],
+    ['Task assigned','Assigned staff ✔','✔ (if provider)',na],['Task approaching due date','Assigned staff ✔','✔ (if theirs)',na],
+    ['Compensation marked as paid',na,'✔',na],['POA document flagged (representative)',na,na,'✔ (rep only)']
+  ];
+  return `<p class="page-lead">Phase 1: in-app only (bell icon, all portals). Email, browser push, and deep-linking are Phase 2.</p>
+  <div class="card"><div class="card-header-bar">Notification Events by Recipient</div>
+    <table class="data"><thead><tr><th>Event</th><th>Staff Notified</th><th>Provider Notified</th><th>Veteran + Representative</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join('')}
+    </tbody></table></div>
+  <div class="grid k2" style="margin-top:14px">
+    <div class="card"><div class="card-header-bar">Delivery Channels</div>
+      <table class="data"><thead><tr><th>Channel</th><th>Phase 1</th><th>Phase 2</th></tr></thead><tbody>
+      <tr><td>In-app panel (bell icon)</td><td>${chip('Active')} All portals</td><td>All portals</td></tr>
+      <tr><td>Email notifications</td><td>Not included</td><td>Per-event configurable</td></tr>
+      <tr><td>Browser push</td><td>Not included</td><td>All portals</td></tr>
+      <tr><td>Deep linking to record</td><td>Not included</td><td>All portals</td></tr>
+      </tbody></table></div>
+    <div class="card"><div class="card-header-bar">Notification Center Behavior</div>
+      <ul class="doc-list"><li>Bell icon with unread count on every page of every portal.</li>
+      <li>Clicking opens a dropdown panel of recent notifications; count clears as read.</li>
+      <li>Representative notifications include the veteran's name for multi-case identification.</li>
+      <li>Per-event Notification Preferences available in each user's Profile.</li></ul></div>
+  </div>`;
+}
+
+function adminCompliance(){
+  return `<p class="page-lead">Compliance & Security requirements (HIPAA-aligned). Configurable thresholds live in Settings › Portal & Security.</p>
+  <div class="grid k2">
+    <div class="card"><div class="card-header-bar">Authentication & Access Control</div><ul class="doc-list">
+      <li>Role-based access control (Super Admin / Admin / User) with least-privilege scoping.</li>
+      <li>MFA enforcement for Staff & Providers (optional Phase 1, configurable).</li>
+      <li>Session timeout: Staff 15 min, Veteran 30 min. Max 5 failed logins. Password expiry 90 days.</li>
+      <li>Active session list with remote logout in each user's profile.</li></ul></div>
+    <div class="card"><div class="card-header-bar">Audit Logging (Activity Log)</div><ul class="doc-list">
+      <li>All record views, creates, edits, status changes, and document access are logged with user + timestamp.</li>
+      <li>Identity-field changes (name, DOB) are flagged to staff for verification.</li>
+      <li>See the Activity Log tab for the searchable audit trail.</li></ul></div>
+    <div class="card"><div class="card-header-bar">Data Isolation & PHI</div><ul class="doc-list">
+      <li>Veterans/representatives can only access their own (or linked) cases.</li>
+      <li>Providers scoped to assigned cases only. Reports carry a PHI confidentiality notice on download.</li>
+      <li>Plain-language status labels shield internal operational terms from veterans.</li></ul></div>
+    <div class="card"><div class="card-header-bar">Data Transmission, Storage & Separation</div><ul class="doc-list">
+      <li>Encryption in transit (TLS) and at rest for all documents and PHI.</li>
+      <li>Short-lived, signed download links for reports/records.</li>
+      <li>Nexletta data is fully separated from Meditask (independent tenancy).</li></ul></div>
+  </div>`;
+}
+
+/* ═══ PROVIDER PAGES ═══ */
+const PROVIDER_CASE_TABS=['Overview','Demographics','Visits','Labs','Imaging','Records',"Veteran's Notes",'Records Review','Transcripts','Evaluation Forms','Alerts'];
+function setEvalQueueTab(t){ state.evalQueueTab=t; render(); }
+function setProviderCaseFilter(f){ state.providerCaseFilter=f; render(); }
+
+function providerDashboard(){
+  return `<h2 class="page-title">Provider Dashboard</h2>
+  <div class="grid k4">
+    <div class="card"><h4>Today's Appointments</h4><div class="kpi">1</div></div>
+    <div class="card"><h4>Pending Evaluations</h4><div class="kpi">2</div></div>
+    <div class="card"><h4>Returned for Revision</h4><div class="kpi" style="color:var(--emergency-color)">0</div></div>
+    <div class="card"><h4>Awaiting QA</h4><div class="kpi">1</div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><div class="card-header-bar">Today's Appointments</div>
+  <p style="margin:0"><strong>10:00 AM</strong> — James R. Martinez · DBQ · Nexletta Clinic Dallas <button class="btn btn-primary btn-sm" onclick="goPage('p-cases')">Open Case Workspace</button></p></div>
+  ${bpAcc('Dashboard Widgets', bpList(['<strong>Today\'s appointments card:</strong> Veteran name, time, case type, location or telehealth link — links to Case Workspace','<strong>Pending evaluations card:</strong> Count of cases not yet submitted — links to Evaluations Queue To Complete tab','<strong>Returned for revision card:</strong> QA-returned cases highlighted as high priority','<strong>Submitted / awaiting QA card:</strong> Evaluations currently in QA review','<strong>Upcoming appointments:</strong> Next seven scheduled appointments','<strong>Tasks card:</strong> Open tasks assigned to provider with due date and priority','<strong>Quick actions:</strong> Open next pending evaluation, View today\'s schedule']))}`;
+}
+
+function providerCases(){
+  const mine=CASES.filter(c=>c.provider.includes('Whitmore')||c.provider.includes('Okonkwo'));
+  return `<h2 class="page-title">My Cases</h2>
+  <table class="data"><thead><tr><th>MRN</th><th>Veteran</th><th>Type</th><th>Contentions</th><th>Eval Status</th><th>SLA</th></tr></thead>
+  <tbody>${mine.map(c=>`<tr class="selectable" onclick="openProviderCase('${c.mrn}')"><td>${c.mrn}</td><td>${c.name}</td><td>${c.type}</td><td>${c.contentions.length}</td><td>${c.status==='Pending QA Review'?'Submitted':c.status==='In progress'?'In Progress':'Pending'}</td><td>${c.sla}</td></tr>`).join('')}</tbody></table>
+  ${state.openCase?renderProviderCaseWs(state.openCase):''}
+  ${bpAcc('My Cases List', bpList(['<strong>Table columns:</strong> Case ID / MRN, Veteran Name, Case Type, Contentions (count), Appointment Date, Evaluation Status, SLA Due Date, Last Updated','<strong>Status tabs:</strong> All, Pending Evaluation, In Progress, Submitted (Awaiting QA), Returned for Revision, Completed','<strong>Filters:</strong> Evaluation status, case type, appointment date range, contention type, SLA risk','<strong>Row click:</strong> Opens full Case Workspace; multiple cases preserve tab state and unsaved drafts']))}
+  ${bpAcc('Case Workspace Tabs', bpList(PROVIDER_CASE_TABS.map(t=>'<strong>'+t+'</strong> — '+({Overview:'case summary, appointment, eval status, staff intake notes',Demographics:'read-only veteran demographics',Visits:'longitudinal visit history',Labs:'in-practice labs only',Imaging:'in-practice imaging only',Records:'inline viewer read-only',"Veteran's Notes":'lay statements read-only','Records Review':'pre-review conclusions',Transcripts:'provider-editable audio/text notes','Evaluation Forms':'one form per contention, submit for QA',Alerts:'case-scoped SLA & tasks'}[t]||''))))}`;
+}
+
+function renderProviderCaseWs(mrn){
+  const c=CASES.find(x=>x.mrn===mrn);if(!c)return'';
+  const tabs=PROVIDER_CASE_TABS;
+  const active=tabs.includes(state.caseTab)?state.caseTab:'Overview';
+  let body;
+  if(active==='Overview') body=`
+    <div class="form-grid">
+      <div class="field"><label>Case ID / MRN</label><div>${c.mrn}</div></div>
+      <div class="field"><label>Case Type</label><div>${c.type}</div></div>
+      <div class="field"><label>Contentions</label><div>${c.contentions.join(', ')}</div></div>
+      <div class="field"><label>Status</label><div>${chip(c.status)}</div></div>
+      <div class="field"><label>SLA Due</label><div>${c.sla}</div></div>
+      <div class="field"><label>Referring Org</label><div>${c.org}</div></div>
+    </div>
+    <div class="card" style="margin-top:12px"><div class="card-header-bar">Appointment</div>
+      <p style="margin:0">Jul 10, 2026 10:00 AM · DBQ Evaluation · In-person · Nexletta Clinic Dallas</p></div>
+    <div class="card" style="margin-top:12px"><div class="card-header-bar">Staff Intake Notes (read-only)</div>
+      <p style="margin:0;font-size:13px">Referral for PTSD, Right Knee, Tinnitus DBQs. Veteran served Iraq 2004–2006. Review STR before evaluation.</p></div>
+    <button class="btn btn-primary btn-sm" style="margin-top:12px" onclick="setCaseTab('Evaluation Forms')">Open Evaluation Forms</button>`;
+  else if(active==='Evaluation Forms') body=`
+    ${bpAcc('Evaluation Forms — Blueprint Rules', bpList(['One form section per contention — diagnosis, history, nexus opinion, functional impact, signature','Character limits on VA DBQ-mapped fields with live count','Conditional Yes/No fields mirror VA DBQ structure','Auto-save with last-saved indicator','Returned for revision: reviewer notes at top, form re-editable']))}
+    <p><strong>One form per contention:</strong> ${c.contentions.join(' · ')}</p>
+    <div class="form-grid"><div class="field full"><label>PTSD — Diagnosis (required)</label><input value="Post-Traumatic Stress Disorder"/></div>
+    <div class="field full"><label>Nexus Opinion</label><select><option>At least as likely as not</option><option>More likely than not</option><option>Less likely than not</option></select></div>
+    <div class="field full"><label>Signature Block</label><button class="btn btn-ghost btn-sm">Typed Signature</button> <button class="btn btn-ghost btn-sm">Draw Signature</button></div></div>
+    <p style="font-size:12px;color:var(--text-70)">Last saved: just now</p>
+    <button class="btn btn-primary" style="margin-top:12px" onclick="submitEvalForQA('${mrn}')">Submit for QA Review</button>`;
+  else if(active==='Alerts') body=caseAlertsPanel(c);
+  else if(active==='Transcripts') body=renderCasePanel(c,'Transcripts')+bpAcc('Provider Actions', bpList(['Upload audio from visit or dictation','Attach linked text transcript','Add free-text clinical notes','Edit/delete own entries before QA submission']));
+  else body=renderCasePanel(c,active);
+  return `<div class="case-workspace" id="case-ws"><div class="case-workspace-head"><strong>${c.mrn}</strong> — ${c.name} ${chip(c.status)} <button class="btn btn-ghost btn-sm" onclick="closeCase()"><i class="bi bi-x-lg"></i> Close</button></div>
+  <div class="case-tabs">${tabs.map(t=>`<div class="case-tab ${active===t?'active':''}" onclick="setCaseTab('${t.replace(/'/g,"\\'")}')">${t}</div>`).join('')}</div>
+  <div class="case-panel">${body}</div></div>`;
+}
+
+function providerCalendar(){
+  return `<h2 class="page-title">Calendar</h2><p class="page-lead">Weekly recurring schedule, block time, view booked appointments.</p>${weeklyCalendar({blockControls:true})}
+  ${bpAcc('Calendar Views', bpList(['<strong>Weekly view (default):</strong> Time-slot grid — hours × days of week','<strong>Monthly view:</strong> Appointment counts per day and blocked date ranges','<strong>Color coding:</strong> Gold = available; dark overlay = booked; red = blocked; grey = outside hours','<strong>Calendar legend:</strong> Inline color key below the grid']))}
+  ${bpAcc('Set Recurring Availability', bpList(['Configure recurring availability per day: day, start time, end time, location','Different hours per location; changes apply to future bookings only','Confirmation dialog before saving; reflected on staff booking calendar']))}
+  ${bpAcc('Block Time', bpList(['Select date or date range as unavailable','<strong>Block reason (required):</strong> Vacation, Personal Leave, Medical Leave, Training, Conference, Public Holiday, Other','Blocked periods visible to staff in real time; edit or remove anytime']))}
+  ${bpAcc('Viewing Appointments', bpList(['Booked appointments appear as non-editable blocks','Click opens detail card: veteran, case type, location or telehealth link, staff notes','Telehealth: Join Session button in detail card','Direct link to Case Workspace; providers cannot cancel/reschedule from calendar']))}`;
+}
+
+function providerEvalQueue(){
+  const tab=state.evalQueueTab||'To Complete';
+  const mine=CASES.filter(c=>c.provider.includes('Whitmore')||c.provider.includes('Okonkwo'));
+  let rows;
+  if(tab==='Returned for Revision') rows=mine.filter(c=>c.status==='Recon');
+  else if(tab==='Submitted (Awaiting QA)') rows=mine.filter(c=>c.status==='Pending QA Review');
+  else if(tab==='Recently Completed') rows=mine.filter(c=>['Ready','Complete'].includes(c.status));
+  else rows=mine.filter(c=>['In progress','Pre-Review completed','Records complete'].includes(c.status));
+  return `<h2 class="page-title">Evaluations Queue</h2>
+  ${navTabs(['To Complete','Returned for Revision','Submitted (Awaiting QA)','Recently Completed'],tab,'setEvalQueueTab')}
+  <table class="data"><thead><tr><th>MRN</th><th>Veteran</th><th>Type</th><th>Contentions</th><th>SLA</th><th>Urgency</th><th></th></tr></thead>
+  <tbody>${rows.length?rows.map(c=>`<tr class="selectable" onclick="openProviderCase('${c.mrn}')"><td>${c.mrn}</td><td>${c.name}</td><td>${c.type}</td><td>${c.contentions.length}</td><td>${c.sla}</td><td>${chip('Medium')}</td><td><button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openProviderCase('${c.mrn}');setCaseTab('Evaluation Forms')">Open Form</button></td></tr>`).join(''):'<tr><td colspan="7" style="color:var(--text-70)">No cases in this queue.</td></tr>'}</tbody></table>
+  ${bpAcc('Evaluations Queue Tabs', bpList(['<strong>To Complete:</strong> Evaluations not yet submitted — sorted by SLA due date, most urgent first','<strong>Returned for Revision:</strong> QA-returned with revision notes — highest priority','<strong>Submitted (Awaiting QA):</strong> In QA review — read-only until staff acts','<strong>Recently Completed:</strong> QA-approved cases moved to Ready or Complete','<strong>Each item shows:</strong> MRN, veteran name, case type, contentions count, SLA due date, urgency indicator (green / amber / red)']))}`;
+}
+
+function providerEarnings(){
+  return `<h2 class="page-title">My Earnings</h2>
+  <div class="grid k4"><div class="card"><h4>Pending</h4><div class="kpi">$1,200</div></div><div class="card"><h4>Paid This Month</h4><div class="kpi">$800</div></div></div>
+  <table class="data" style="margin-top:14px"><thead><tr><th>MRN</th><th>Type</th><th>Completed</th><th>Rate</th><th>Status</th></tr></thead>
+  <tbody><tr><td>NXL-2026-0048</td><td>DBQ</td><td>Jun 22, 2026</td><td>$350</td><td>${chip('Paid')}</td></tr></tbody></table>
+  ${bpAcc('Summary', bpList(['<strong>Summary cards:</strong> Total Pending, Total Paid This Month, Total Paid This Year, Total Paid All Time','Figures from compensation ledger managed by staff in Providers module','Visual bar showing split between Pending, Paid, and On Hold']))}
+  ${bpAcc('Earnings Ledger', bpList(['<strong>Table columns:</strong> MRN, Case Type, Veteran Name, Date Completed, Configured Rate, Adjusted Amount, Final Amount, Status, Payment Reference, Notes','<strong>Status values:</strong> Pending, Paid, On Hold','On Hold entries show staff-entered reason; manual override amounts visible to provider']))}
+  ${bpAcc('Export', bpList(['Export full or filtered earnings ledger as CSV for accounting or tax preparation','Includes all visible columns; date range filtering applies to export']))}`;
+}
+
+/* ═══ VETERAN PAGES ═══ */
+function vetCaseData(){
+  if(state.vetUser==='representative'&&state.selectedVeteran) return VETERANS.find(v=>v.veteranId===state.selectedVeteran)||VETERANS[0];
+  return {name:'James R. Martinez',veteranId:'VET-10482',mrn:'NXL-2026-0089',type:'DBQ',status:'Pending Records',contentions:['PTSD','Right Knee','Tinnitus']};
+}
+
+function plainStatusBpList(){ return bpList(STATUSES.map(s=>'<strong>'+s+':</strong> '+PLAIN_STATUS[s])); }
+
+function veteranDashboard(){
+  const rep=state.vetUser==='representative';
+  if(rep&&!state.selectedVeteran){
+    return `<h2 class="page-title">Representative Dashboard</h2>
+    <div class="banner banner-warn">2 veterans have outstanding actions</div>
+    <table class="data"><thead><tr><th>Veteran</th><th>Case Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      <tr class="selectable" onclick="selectManagedVet('VET-10482')"><td>James R. Martinez</td><td>DBQ</td><td>${chip('Pending Records')}</td><td>Documents needed</td></tr>
+      <tr class="selectable" onclick="selectManagedVet('VET-9876')"><td>Linda M. Foster</td><td>IME Single</td><td>${chip('Pending Payment')}</td><td>Unpaid invoice</td></tr>
+    </tbody></table>
+    ${bpAcc('Representative Dashboard', bpList(['<strong>Outstanding actions summary:</strong> Count of veterans with unpaid invoice, documents needed, or unanswered staff questions','<strong>Veterans overview table:</strong> Plain-language status, outstanding action count, last updated — critical actions sorted to top','<strong>Unpaid invoices highlight:</strong> Amber flag with click-through to Billing module','<strong>Unified notifications card:</strong> Recent notifications across all linked veterans with veteran name on each card','<strong>Quick access:</strong> Link to Managed Veterans module']))}
+    ${bpAcc('Plain-Language Status Labels', plainStatusBpList())}`;
+  }
+  const c=vetCaseData();const idx=STATUSES.indexOf(c.status||'Pending Records');
+  return `<h2 class="page-title">Dashboard</h2>
+  ${c.status==='Pending Payment'?'<div class="banner banner-warn">Payment required: $650 due Jul 12, 2026 — view Billing</div>':''}
+  <div class="card"><div class="card-header-bar">Case Status</div><p style="font-size:16px;font-weight:600;margin:0 0 6px;color:var(--text-dark-color)">${PLAIN_STATUS[c.status||'Pending Records']}</p>
+  <div class="progress-bar">${['Pending Records','Records complete','Pending Pre-Review','Pre-Review completed','In progress','Ready','Complete'].map(s=>{const si=STATUSES.indexOf(s);return `<div class="seg ${si<idx?'done':si===idx?'current':''}"></div>`;}).join('')}</div></div>
+  <div class="grid k2" style="margin-top:14px">
+    <div class="card"><div class="card-header-bar">Outstanding Actions</div><ul style="margin:0;padding-left:18px;font-size:13px"><li>Upload Service Treatment Records (STR)</li><li>Upload DD214 / PMR</li></ul></div>
+    <div class="card"><div class="card-header-bar">Next Appointment</div><p style="margin:0">Jul 10, 2026 10:00 AM · In-person · Nexletta Clinic Dallas<br><button class="btn btn-ghost btn-sm" style="margin-top:6px"><i class="bi bi-geo-alt"></i> Get Directions</button></p></div>
+  </div>
+  ${bpAcc('Veteran Dashboard', bpList(['<strong>Unpaid invoice banner:</strong> Prominent top banner with amount, due date, link to Billing — persists until payment confirmed','<strong>Report ready banner:</strong> "Your report is ready" with link to Reports when delivered','<strong>Case status card:</strong> Plain-language label with step-by-step progress bar','<strong>Outstanding actions card:</strong> Documents to upload, staff questions, payment — each links to relevant module','<strong>Appointment card:</strong> Next appointment with Get Directions (in-person) or Join Session (telehealth, 15-min window)']))}
+  ${bpAcc('Plain-Language Status Labels', plainStatusBpList())}`;
+}
+
+function veteranManaged(){
+  return `<h2 class="page-title">Managed Veterans</h2>
+  <p class="page-lead">Select a veteran to access Case, Records, Notes, Appointments, Billing, Reports.</p>
+  <table class="data"><thead><tr><th>Veteran ID</th><th>Name</th><th>Case Type</th><th>Status</th><th>POA</th><th>Actions</th></tr></thead><tbody>
+    <tr class="selectable" onclick="selectManagedVet('VET-10482')"><td>VET-10482</td><td>James R. Martinez</td><td>DBQ</td><td>${chip('Pending Records')}</td><td>${chip('Verified by staff')}</td><td>2</td></tr>
+    <tr class="selectable" onclick="selectManagedVet('VET-9876')"><td>VET-9876</td><td>Linda M. Foster</td><td>IME Single</td><td>${chip('Pending Payment')}</td><td>${chip('Verified by staff')}</td><td>1</td></tr>
+  </tbody></table>
+  ${bpAcc('Veterans List', bpList(['<strong>Table columns:</strong> Veteran ID, Name, Case Type, Case Status (plain-language), Outstanding Actions, POA Status, Last Updated','<strong>Outstanding actions indicator:</strong> Badge for unpaid invoice, documents needed, unanswered questions, POA issues','<strong>Row click:</strong> Opens veteran case with breadcrumb Managed Veterans › [Name]']))}
+  ${bpAcc('Individual Veteran Case View', bpList(['Breadcrumb navigation always visible — click Managed Veterans to return to list','Representative sees same modules as veteran: Case, Records, Notes, Appointments, Billing, Reports','Veteran and representative submissions labeled separately; neither can overwrite the other\'s entries']))}
+  ${bpAcc('Veteran Portal Independence', bpList(['Veteran may have separate portal account alongside representative management','Both can access case in parallel — uploads and notes labeled by submitter','Staff sees all submissions in Case Detail, clearly attributed']))}`;
+}
+
+function repBreadcrumb(){
+  if(state.vetUser==='representative'&&state.selectedVeteran){
+    const v=VETERANS.find(x=>x.veteranId===state.selectedVeteran);
+    return `<div class="breadcrumb"><a onclick="backToManaged()">Managed Veterans</a> › ${v?v.name:''}</div>`;
+  }
+  return '';
+}
+
+function veteranRecords(){
+  const rep=state.vetUser==='representative';
+  const vid=getActiveVetId();
+  const checklist=initVetChecklist(vid);
+  const mrn=getActiveCaseMrn();
+  let html=repBreadcrumb();
+  if(rep) html+=`<div class="collapse-panel" style="margin-bottom:14px"><div class="collapse-head">Power of Attorney (Required)</div><div class="collapse-body">
+    POA Status: ${chip(vetPOA[vid]||'Not Uploaded')}
+    <button class="btn btn-primary btn-sm" style="margin-left:12px" onclick="uploadPOA()"><i class="bi bi-upload"></i> Upload POA</button></div></div>`;
+  html+=`<h2 class="page-title">Records</h2><p class="page-lead">Required Document Checklist. Records are viewable in the portal; DOCX and common file types are supported.${rep?' POA must be verified before records can be marked complete.':''}</p>`;
+  const items=[
+    {code:'STR',name:'Service Treatment Records (STR)'},{code:'PMR',name:'Personnel / Military Records (PMR / DD214)'},
+    {code:'VAMC',name:'VA Medical Center Records (VAMC)'},{code:'PRIV',name:'Private Medical Records (PRIV)'},
+    {code:'CP',name:'Prior C&P Exam Reports (CP)'},{code:'C-File',name:'Claims File (C-File)'},
+    {code:'CORR',name:'Buddy Statements / Lay Evidence (CORR)'}
+  ];
+  html+=items.map(item=>`<div class="doc-row"><div><span class="tag tag-grey" style="margin-right:8px">${item.code}</span><strong>${item.name}</strong></div>${chip(checklist[item.code]||'Not Uploaded')} <button class="btn btn-ghost btn-sm" onclick="uploadVetRecord('${item.code}')"><i class="bi bi-upload"></i> Upload</button></div>`).join('');
+  html+=`<button class="btn btn-gold" style="margin-top:16px" onclick="markRecordsComplete()">Mark Records Complete</button>`;
+  html+=bpAcc('Document Checklist', bpList(['<strong>Status per item:</strong> Not Uploaded, Uploaded (pending staff review), Confirmed by staff, Needs Attention','Upload per checklist item; multiple files per slot; general "Other Supporting Documents" slot always available','Supported formats: PDF, DOCX, DOC, JPG, PNG — clear error messages for rejected files','Staff rejection note displayed when item flagged Needs Attention']));
+  html+=bpAcc('Power of Attorney (Representatives Only)', bpList(['Dedicated POA section at top of Records for representatives','POA status: Not uploaded, Uploaded (pending staff verification), Verified by staff','Mark Records Complete disabled until POA uploaded and verified by staff','If POA rejected: Needs Attention status with inline note and notification']));
+  html+=bpAcc('Mark Records Complete', bpList(['Prominent button at bottom of checklist — optional client readiness signal','For representatives: disabled until POA verified; inline message explains requirement','Does not auto-advance case — staff still perform triage and official confirmation','Confirmation prompt before submission to prevent accidental taps']));
+  return html;
+}
+function uploadVetRecord(code){
+  const vid=getActiveVetId();
+  const checklist=initVetChecklist(vid);
+  checklist[code]='Uploaded (pending staff review)';
+  const mrn=getActiveCaseMrn();
+  if(mrn){ initCaseRecords(mrn).forEach(r=>{ if(r.code===code) r.status='Uploaded (pending staff review)'; }); }
+  toast('Document uploaded ('+code+') — pending staff review');
+  render();
+}
+function markRecordsComplete(){
+  const vid=getActiveVetId();
+  const rep=state.vetUser==='representative';
+  if(rep&&vetPOA[vid]!=='Verified by staff'){ toast('POA must be verified by staff before marking records complete','error'); return; }
+  const mrn=getActiveCaseMrn();
+  const c=CASES.find(x=>x.mrn===mrn);
+  if(!c){ toast('No active case found','error'); return; }
+  if(c.status!=='Pending Records'){ toast('Case is not in Pending Records status','error'); return; }
+  if(!confirm('Confirm you have uploaded all required documents. Mark records complete? This advances your case to Records complete and notifies the records team.')) return;
+  c.status='Records complete';
+  const v=VETERANS.find(x=>x.veteranId===vid);
+  if(v) v.lastStatus='Records complete';
+  toast('Records marked complete — case moved to Records complete');
+  render();
+}
+
+function veteranNotes(){
+  const sq=vetNotes.staffQuestions[0]||{q:'',a:''};
+  return repBreadcrumb()+`<h2 class="page-title">Notes</h2>
+  <div class="card"><div class="card-header-bar">Personal Statement</div><textarea id="vet-ps" class="form-control" style="min-height:100px">${vetNotes.personalStatement||''}</textarea></div>
+  <div class="card" style="margin-top:14px"><div class="card-header-bar">Staff Question (required)</div><p style="margin:0 0 6px">${sq.q}</p><textarea id="vet-sq-ans" class="form-control">${sq.a||''}</textarea></div>
+  <button class="btn btn-primary" style="margin-top:12px" onclick="submitVetNotes()">Save Notes</button>
+  ${bpAcc('Personal Statement', bpList(['Free-text lay statements and service history — editable until case reaches In progress','Locked read-only once evaluation begins: "Your statement has been locked as the evaluation has begun"','Representative entries labeled with submitter name']))}
+  ${bpAcc('Staff Questions', bpList(['Staff-added questions appear as labeled fields separate from personal statement','Required questions marked clearly; save one at a time — response read-only unless staff re-opens','Re-open sends notification; new questions trigger in-app notification','Representatives can answer on behalf of veterans — responses labeled']))}`;
+}
+
+function veteranBilling(){
+  const mrn=getActiveCaseMrn();
+  const invs=INVOICES.filter(i=>i.mrn===mrn);
+  const pending=invs.find(i=>i.status==='Pending');
+  const paidMsg=vetPaymentSubmitted[mrn]?'<div class="banner banner-info" style="margin-bottom:12px">Payment confirmation sent to billing team — awaiting verification.</div>':'';
+  return repBreadcrumb()+`<h2 class="page-title">Billing</h2>${paidMsg}
+  ${pending?`<div class="banner banner-warn">Invoice ${pending.id} — $${pending.amount} due ${pending.due} · Bank transfer / Zelle per practice instructions</div>`:''}
+  <table class="data"><thead><tr><th>Invoice</th><th>Service</th><th>Amount</th><th>Status</th><th>Due</th></tr></thead>
+  <tbody>${invs.length?invs.map(i=>`<tr><td>${i.id}</td><td>${i.service}</td><td>$${i.amount}</td><td>${chip(i.status)}</td><td>${i.due}</td></tr>`).join(''):`<tr><td colspan="5" style="color:var(--text-70)">No invoices for this case.</td></tr>`}</tbody></table>
+  ${pending&&!vetPaymentSubmitted[mrn]?`<button class="btn btn-primary" style="margin-top:12px" onclick="submitVetPayment()">I have made payment</button>`:''}
+  ${bpAcc('Payment Flow', bpList(['<strong>Unpaid invoice banner:</strong> Amount, service, due date, payment instructions — persists on dashboard and Billing until confirmed','<strong>"I have made payment" button:</strong> Optional client confirmation — notifies billing staff; does not confirm payment','Auto-hide if staff marks paid first; green confirmation when payment verified by practice','Deferred billing: consolidated periodic invoice message — no upfront payment for org-deferred cases','Billing history for returning veterans with multiple past cases']))}`;
+}
+
+function veteranReports(){
+  return repBreadcrumb()+`<h2 class="page-title">Reports</h2>
+  <p class="page-lead">Final DBQ, Nexus Letter, TDIU &amp; opinion letters. Published only after QA is completed — no draft or pre-QA versions are ever accessible here.</p>
+  <div class="banner banner-info"><i class="bi bi-shield-lock"></i> These documents contain protected health information (PHI). A one-time privacy notice is shown before your first download this session.</div>
+  <div class="card"><div class="card-header-bar">Current Case — NXL-2026-0089 (DBQ)</div>
+    <div class="banner banner-info" style="margin:0">Your report is not yet available. We will notify you when it is ready.</div></div>
+  <div class="card" style="margin-top:14px"><div class="card-header-bar">Delivered Reports — Past Cases</div>
+    <table class="data"><thead><tr><th>Report Type</th><th>Contention(s)</th><th>Case Ref</th><th>Delivery Date</th><th>Download</th></tr></thead><tbody>
+    <tr><td><span class="tag tag-grey">REPORT</span> Knee DBQ</td><td>Right Knee</td><td>NXL-2025-0410</td><td>Jul 2, 2025</td><td><button class="btn btn-ghost btn-sm" onclick="downloadReport('Knee DBQ')"><i class="bi bi-download"></i> PDF</button></td></tr>
+    <tr><td><span class="tag tag-grey">REPORT</span> Nexus Letter</td><td>Tinnitus</td><td>NXL-2025-0410</td><td>Jul 2, 2025</td><td><button class="btn btn-ghost btn-sm" onclick="downloadReport('Nexus Letter')"><i class="bi bi-download"></i> PDF</button></td></tr>
+    </tbody></table></div>
+  ${bpAcc('PHI Notice & Downloads', bpList(['One-time privacy notice before first download per session: protected health information acknowledgment','Secure short-lived download link generated for each PDF','No draft or pre-QA versions ever accessible in this module']))}
+  ${bpAcc('Past Cases & Availability', bpList(['Reports from all completed past cases accessible here and in Case › Past Cases tab','If case still in progress: "Your report is not yet available. We will notify you when it is ready."','Representatives can download for any linked veteran — same privacy notice applies']))}`;
+}
+function downloadReport(name){
+  if(!state._phiAck){
+    if(confirm('This document contains protected health information. By downloading, you confirm you will keep it secure and not share it without authorization.')){ state._phiAck=true; } else { return; }
+  }
+  alert('Generating secure, short-lived download link for: '+name+' (prototype).');
+}
+
+/* ═══ ANNOUNCEMENTS & HELP ═══ */
+function staffAnnouncements(){
+  return `<h2 class="page-title">Announcements</h2>
+  <div class="toolbar"><button class="btn btn-primary" onclick="openAnnouncementModal()"><i class="bi bi-plus-lg"></i> New Announcement</button></div>
+  ${ANNOUNCEMENTS.map(a=>`<div class="card"><div class="card-header-bar" style="display:flex;justify-content:space-between"><span>${a.title}</span><span style="font-weight:400;font-size:12px;color:var(--text-70)">${a.date} · ${a.audience}</span></div>
+    <p style="margin:0">${a.body}</p>
+    <div style="margin-top:8px"><i class="bi bi-pencil" style="cursor:pointer;color:var(--theme-color);margin-right:12px" onclick="openAnnouncementModal('${a.id}')" title="Edit"></i><i class="bi bi-trash" style="cursor:pointer;color:var(--danger)" onclick="deleteAnnouncement('${a.id}')" title="Delete"></i></div></div>`).join('')}
+  ${bpAcc('Target Audience Enforcement', bpList(['Staff Only — never surfaced in Provider Portal','Providers Only — Provider Portal Announcements only','All staff & providers — both portals','Billers — staff billing team notices']))}`;
+}
+function openAnnouncementModal(id){
+  const a=id?ANNOUNCEMENTS.find(x=>x.id===id):null;
+  state.editAnnouncement=id||null;
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()">
+    <div class="modal-content md"><div class="modal-header"><h3>${a?'Edit':'New'} Announcement</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field full"><label>Title</label><input id="ann-title" value="${a?a.title.replace(/"/g,'&quot;'):''}"/></div>
+      <div class="field"><label>Audience</label><select id="ann-audience"><option ${a&&a.audience==='All staff & providers'?'selected':''}>All staff & providers</option><option ${a&&a.audience==='Providers'?'selected':''}>Providers</option><option ${a&&a.audience==='Billers'?'selected':''}>Billers</option><option ${a&&a.audience==='All staff'?'selected':''}>All staff</option></select></div>
+      <div class="field full"><label>Body</label><textarea id="ann-body" class="form-control">${a?a.body:''}</textarea></div>
+    </div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitAnnouncement()">Save</button></div></div></div>`;
+}
+function submitAnnouncement(){
+  const title=val('ann-title'), body=val('ann-body'), audience=sel('ann-audience');
+  if(!title||!body){ toast('Title and body are required','error'); return; }
+  if(state.editAnnouncement){
+    const a=ANNOUNCEMENTS.find(x=>x.id===state.editAnnouncement);
+    if(a){ a.title=title; a.body=body; a.audience=audience; }
+  } else {
+    ANNOUNCEMENTS.unshift({id:nextAnnId(),title,audience,date:todayFull(),body});
+  }
+  closeModal(); toast('Announcement saved'); render();
+}
+function deleteAnnouncement(id){
+  if(!confirm('Delete this announcement?')) return;
+  ANNOUNCEMENTS=ANNOUNCEMENTS.filter(a=>a.id!==id);
+  toast('Announcement deleted'); render();
+}
+function providerAnnouncements(){
+  return `<h2 class="page-title">Announcements</h2>
+  <p class="page-lead">Practice announcements (read-only).</p>
+  ${ANNOUNCEMENTS.filter(a=>a.audience!=='Billers'&&a.audience!=='All staff').map(a=>`<div class="card"><div class="card-header-bar" style="display:flex;justify-content:space-between"><span>${a.title}</span><span style="font-weight:400;font-size:12px;color:var(--text-70)">${a.date} · ${a.audience}</span></div><p style="margin:0">${a.body}</p></div>`).join('')}
+  ${bpAcc('Announcements (Read-Only)', bpList(['<strong>Announcements list:</strong> Title, date posted, urgency level, body — provider-targeted only','<strong>Dashboard display:</strong> Active announcements also appear as banner on Dashboard','<strong>Dismiss:</strong> Provider can dismiss for themselves — moves to archived view','<strong>Archive:</strong> Expired or dismissed announcements remain readable','Staff-only notices never shown in Provider Portal']))}`;
+}
+function providerHelp(){
+  return `<h2 class="page-title">Help &amp; Support</h2>
+  <div class="grid k2">
+    <div class="card"><div class="card-header-bar">Getting Started</div><ul class="doc-list">
+      <li>Completing an evaluation form (one form per contention)</li>
+      <li>Using typed vs. drawn signatures on DBQs</li>
+      <li>Setting your weekly availability &amp; blocking time</li>
+      <li>Submitting for QA review &amp; handling revisions</li></ul></div>
+    <div class="card"><div class="card-header-bar">Contact Support</div>
+      <div class="form-grid"><div class="field full"><label>Subject</label><input placeholder="How can we help?"/></div>
+      <div class="field full"><label>Message</label><textarea class="form-control" style="min-height:90px"></textarea></div></div>
+      <button class="btn btn-primary" style="margin-top:10px"><i class="bi bi-send"></i> Send to Support</button>
+      <p style="font-size:12px;color:var(--text-70);margin-top:10px">Or email <strong>support@nexletta.com</strong> · Response within 1 business day.</p></div>
+  </div>
+  ${bpAcc('FAQ / Help Documentation', bpList(['How to complete an evaluation form (one form per contention)','How to configure availability and block calendar time','How to interpret Records Review content','How to handle revision requests from QA']))}
+  ${bpAcc('Contact & Technical Support', bpList(['<strong>Contact the practice:</strong> Message to operations team — can be linked to a case','<strong>Report a technical issue:</strong> Separate form for bugs, access problems, portal errors — flagged for IT/admin','<strong>Platform version note:</strong> Current portal version shown at bottom for issue reporting']))}`;
+}
+
+function veteranCase(){
+  const c=vetCaseData();
+  const tab=state.vetCaseTab||'Current Case';
+  let body;
+  if(tab==='Past Cases'){
+    body=`<table class="data"><thead><tr><th>Case Ref</th><th>Case Type</th><th>Contention(s)</th><th>Completed</th><th>Reports</th></tr></thead><tbody>
+      <tr><td>NXL-2025-0410</td><td>DBQ</td><td>Right Knee, Tinnitus</td><td>Jul 2, 2025</td><td><button class="btn btn-ghost btn-sm" onclick="goPage('v-reports')"><i class="bi bi-download"></i> View Reports</button></td></tr>
+      <tr><td>NXL-2024-0233</td><td>Nexus Letter</td><td>Sleep Apnea</td><td>Nov 18, 2024</td><td><button class="btn btn-ghost btn-sm" onclick="goPage('v-reports')"><i class="bi bi-download"></i> View Reports</button></td></tr>
+      </tbody></table>`;
+  } else {
+    body=`<div class="card"><p><strong>Case Reference:</strong> ${c.mrn||'NXL-2026-0089'}</p>
+    <p><strong>Case Type:</strong> ${c.type||'DBQ'}</p>
+    <p><strong>Contentions:</strong> ${(c.contentions||['PTSD','Right Knee','Tinnitus']).join(', ')}</p>
+    <p><strong>Status:</strong> ${PLAIN_STATUS[c.status||'Pending Records']}</p>
+    <p style="margin:0"><strong>Provider:</strong> Dr. Sarah Whitmore, MD (credentials only)</p></div>`;
+  }
+  return repBreadcrumb()+`<h2 class="page-title">Case</h2>
+  ${navTabs(['Current Case','Past Cases'],tab,'setVetCaseTab')}
+  ${body}
+  ${bpAcc('Current Case', bpList(['Case overview in plain language: type, contentions, status label, provider name (credentials only), MRN for contacting practice','Progress timeline with plain-language labels and dates','SLA: "We aim to complete your evaluation by [date]" when In progress','On Hold / Cancelled shown with public-facing reason note if shared by staff']))}
+  ${bpAcc('Past Cases', bpList(['Archive of completed cases sorted by most recent — case type, contentions, completion date, MRN','Click opens read-only summary with link to reports from that case','Reports subject to same PHI privacy notice as current case']))}`;
+}
+function setVetCaseTab(t){ state.vetCaseTab=t; render(); }
+
+function veteranAppointments(){
+  return repBreadcrumb()+`<h2 class="page-title">Appointments</h2>
+  <div class="card"><div class="card-header-bar">Upcoming</div><p style="margin:0"><strong>Jul 10, 2026 · 10:00 AM</strong> — DBQ Evaluation · In-person<br>Nexletta Clinic — Dallas, TX<br><button class="btn btn-ghost btn-sm" style="margin-top:6px"><i class="bi bi-geo-alt"></i> Get Directions</button></p></div>
+  ${bpAcc('Appointments', bpList(['<strong>No-appointment cases:</strong> Static card for Nexus Letter, Rebuttal, TDIU — evaluation based on records only','<strong>In-person:</strong> Full address with Get Directions (Google Maps link)','<strong>Telehealth:</strong> Join Session hidden until 15 minutes before start — message shown outside window','Reschedule/cancel notifications update appointment card with staff note','Past appointments shown below with Completed or Cancelled label','Representative view identical for selected veteran']))}`;
+}
+
+/* ═══ ADD USER 3-STEP WIZARD (dynamic per User Group) ═══ */
+function openAddUser(group){
+  state.editUserEmail=null;
+  state.addUser={step:1, group:(group&&USER_GROUPS.includes(group))?group:'Admin', superAdmin:false, form:{}};
+  renderAddUser();
+}
+function captureAddUserForm(){
+  const g=state.addUser.group, au=state.addUser.form||{};
+  if(isStaffGroup(g)){
+    au.fn=val('au-fn'); au.ln=val('au-ln'); au.username=val('au-user'); au.email=val('au-email'); au.phone=val('au-phone');
+    au.companyRole=val('au-company');
+  } else if(g==='Provider'){
+    au.fn=val('au-fn'); au.ln=val('au-ln'); au.cred=val('au-cred'); au.email=val('au-email'); au.phone=val('au-phone');
+    au.lic=val('au-lic'); au.licSt=sel('au-lic-st'); au.npi=val('au-npi'); au.specialty=sel('au-spec'); au.location=sel('au-loc');
+  } else if(g==='Veteran'){
+    au.org=sel('au-org'); au.gender=sel('au-gender'); au.fn=val('au-fn'); au.ln=val('au-ln'); au.dob=val('au-dob');
+    au.email=val('au-email'); au.phone=val('au-phone'); au.address=val('au-addr'); au.rep=sel('au-rep'); au.notes=val('au-notes');
+  } else {
+    au.orgName=val('au-org-name'); au.orgType=sel('au-org-type'); au.fn=val('au-fn'); au.ln=val('au-ln');
+    au.email=val('au-email'); au.phone=val('au-phone');
+  }
+  state.addUser.form=au;
+}
+function setAddUserGroup(g){ captureAddUserForm(); state.addUser.group=g; state.addUser.step=1; if(!isStaffGroup(g)) state.addUser.superAdmin=false; renderAddUser(); }
+function toggleSuperAdmin(v){ state.addUser.superAdmin=v; renderAddUser(); }
+function addUserStep(delta){
+  if(delta>0) captureAddUserForm();
+  const g=state.addUser.group, au=state.addUser.form||{};
+  if(delta>0&&state.addUser.step===1){
+    if(isStaffGroup(g)&&(!au.fn||!au.ln||!au.email)){ toast('First name, last name, and email are required','error'); return; }
+    if(g==='Provider'&&(!au.fn||!au.email)){ toast('First name and email are required','error'); return; }
+    if(g==='Veteran'&&(!au.fn||!au.ln||!au.email)){ toast('First name, last name, and email are required','error'); return; }
+    if(g==='Representative'&&(!au.fn||!au.email)){ toast('Contact name and email are required','error'); return; }
+  }
+  state.addUser.step=Math.min(3,Math.max(1,state.addUser.step+delta));
+  renderAddUser();
+}
+function renderAddUser(){
+  const g=state.addUser.group, step=state.addUser.step, au=state.addUser.form||{};
+  const staff=isStaffGroup(g);
+  const role=state.addUser.superAdmin?'Super Admin':deriveRole(g);
+  const edit=!!state.editUserEmail;
+  const steps=['Basic Info','Group Configuration','Review'];
+  const stepper=`<div class="stepper">${steps.map((s,i)=>`<span class="step ${i+1<step?'done':i+1===step?'current':''}">${i+1} ${s}</span>`).join('')}</div>`;
+  const groupSelect=`<div class="field full"><label>User Group (drives the form, role &amp; access)</label>
+    <select onchange="setAddUserGroup(this.value)">${USER_GROUPS.map(x=>`<option ${x===g?'selected':''}>${x}</option>`).join('')}</select></div>`;
+  const roleReadonly=`<div class="field"><label>Role (derived from group)</label><input readonly value="${role}${state.addUser.superAdmin?'':' (derived)'}"/></div>`;
+  const superAdminToggle=staff?`<div class="field"><label>Super Admin (all access)</label><label style="font-size:13px"><input type="checkbox" ${state.addUser.superAdmin?'checked':''} onchange="toggleSuperAdmin(this.checked)"/> Grant Super Admin</label></div>`:'';
+  const v=(id,val)=>val!=null&&val!==''?` value="${String(val).replace(/"/g,'&quot;')}"`:'';
+
+  let body='';
+  if(step===1){
+    if(staff){
+      body=`<div class="form-grid">${groupSelect}
+        <div class="field"><label>First Name</label><input id="au-fn"${v('au-fn',au.fn)}/></div><div class="field"><label>Last Name</label><input id="au-ln"${v('au-ln',au.ln)}/></div>
+        <div class="field"><label>Username</label><input id="au-user"${v('au-user',au.username)}/></div>
+        <div class="field"><label>Email (login)</label><input id="au-email" type="email"${v('au-email',au.email)}/></div>
+        <div class="field"><label>Phone</label><input id="au-phone"${v('au-phone',au.phone)}/></div>
+        <div class="field"><label>Password</label><input id="au-pass" type="password" placeholder="${edit?'Leave blank to keep':'Temporary password on save'}"/></div>
+      </div>`;
+    } else if(g==='Provider'){
+      body=`<div class="form-grid">${groupSelect}
+        <div class="field"><label>First Name</label><input id="au-fn"${v('au-fn',au.fn)}/></div><div class="field"><label>Last Name</label><input id="au-ln"${v('au-ln',au.ln)}/></div>
+        <div class="field"><label>Credentials</label><input id="au-cred" placeholder="MD, PsyD, NP"${v('au-cred',au.cred)}/></div>
+        <div class="field"><label>Email (login)</label><input id="au-email" type="email"${v('au-email',au.email)}/></div>
+        <div class="field"><label>Phone</label><input id="au-phone"${v('au-phone',au.phone)}/></div>
+      </div>`;
+    } else if(g==='Veteran'){
+      body=`<div class="form-grid">${groupSelect}
+        <div class="field"><label>Referring Organization</label><select id="au-org">${refOrgList().map(o=>`<option ${au.org===o?'selected':''}>${o}</option>`).join('')}</select></div>
+        <div class="field"><label>Gender</label><select id="au-gender"><option ${au.gender==='Male'||!au.gender?'selected':''}>Male</option><option ${au.gender==='Female'?'selected':''}>Female</option><option ${au.gender==='Other'?'selected':''}>Other</option></select></div>
+        <div class="field"><label>First Name</label><input id="au-fn"${v('au-fn',au.fn)}/></div><div class="field"><label>Last Name</label><input id="au-ln"${v('au-ln',au.ln)}/></div>
+        <div class="field"><label>Date of Birth</label><input id="au-dob" type="date"${v('au-dob',au.dob)}/></div>
+        <div class="field"><label>Email (login)</label><input id="au-email" type="email"${v('au-email',au.email)}/></div>
+        <div class="field"><label>Phone</label><input id="au-phone"${v('au-phone',au.phone)}/></div>
+        <div class="field full"><label>Mailing Address</label><input id="au-addr"${v('au-addr',au.address)}/></div>
+      </div>`;
+    } else {
+      body=`<div class="form-grid">${groupSelect}
+        <div class="field"><label>Organization / Firm Name</label><input id="au-org-name" placeholder="Torres & Associates Law Firm"${v('au-org-name',au.orgName)}/></div>
+        <div class="field"><label>Organization Type</label><select id="au-org-type"><option ${au.orgType==='Law Firm'||!au.orgType?'selected':''}>Law Firm</option><option ${au.orgType==='VSO'?'selected':''}>VSO</option><option ${au.orgType==='Referral Agency'?'selected':''}>Referral Agency</option><option ${au.orgType==='Other'?'selected':''}>Other</option></select></div>
+        <div class="field"><label>Contact First Name</label><input id="au-fn"${v('au-fn',au.fn)}/></div><div class="field"><label>Contact Last Name</label><input id="au-ln"${v('au-ln',au.ln)}/></div>
+        <div class="field"><label>Email (login)</label><input id="au-email" type="email"${v('au-email',au.email)}/></div>
+        <div class="field"><label>Phone</label><input id="au-phone"${v('au-phone',au.phone)}/></div>
+      </div>`;
+    }
+  } else if(step===2){
+    if(staff){
+      body=`<div class="form-grid">${roleReadonly}${superAdminToggle}
+        <div class="field"><label>Company Role</label><input id="au-company" placeholder="e.g. Operations Lead"${v('au-company',au.companyRole)}/></div>
+      </div>
+      <div class="collapse-panel" style="margin-top:12px"><div class="collapse-head">Module Permissions${state.addUser.superAdmin?' — Super Admin has all access':''}</div><div class="collapse-body">
+        <div style="display:flex;flex-wrap:wrap;gap:10px">${MODULE_PERMS.map(m=>`<label style="font-size:13px"><input type="checkbox" ${state.addUser.superAdmin?'checked disabled':'checked'}/> ${m}</label>`).join('')}</div></div></div>`;
+    } else if(g==='Provider'){
+      body=`<div class="form-grid">${roleReadonly}
+        <div class="field"><label>License Number</label><input id="au-lic"${v('au-lic',au.lic)}/></div>
+        <div class="field"><label>License State</label><select id="au-lic-st">${LICENSE_STATES.map(s=>`<option ${au.licSt===s?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>NPI</label><input id="au-npi"${v('au-npi',au.npi)}/></div>
+        <div class="field"><label>Specialties</label><select id="au-spec">${SPECIALTIES.map(s=>`<option ${au.specialty===s?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>Linked Locations</label><select id="au-loc">${locationList().map(l=>`<option ${au.location===l?'selected':''}>${l}</option>`).join('')}</select></div>
+      </div>
+      <div class="collapse-panel" style="margin-top:12px"><div class="collapse-head">Recurring Weekly Availability (optional)</div><div class="collapse-body">
+        <div style="display:flex;flex-wrap:wrap;gap:8px">${['Mon','Tue','Wed','Thu','Fri'].map(d=>`<label style="font-size:13px"><input type="checkbox"/> ${d} 9:00–17:00</label>`).join('')}</div></div></div>`;
+    } else if(g==='Veteran'){
+      body=`<div class="form-grid">${roleReadonly}
+        <div class="field"><label>Representative Linkage</label><select id="au-rep"><option ${au.rep==='None'||!au.rep?'selected':''}>None</option><option ${au.rep==='Michael Torres — Attorney'?'selected':''}>Michael Torres — Attorney</option></select></div>
+        <div class="field full"><label>Send temporary credentials</label><select id="au-creds"><option>Yes — email on save</option></select></div>
+        <div class="field full"><label>Internal Notes (optional)</label><textarea id="au-notes" class="form-control">${au.notes||''}</textarea></div>
+      </div>`;
+    } else {
+      body=`<div class="form-grid">${roleReadonly}
+        <div class="field full"><label>Linked Veterans</label><select multiple size="3" style="height:auto">${VETERANS.map(vt=>`<option>${vt.name} (${vt.veteranId})</option>`).join('')}</select></div>
+        <div class="field full"><label>Send temporary credentials</label><select><option>Yes — email on save</option></select></div>
+      </div>`;
+    }
+  } else {
+    body=`<div class="banner banner-info">Review the ${edit?'updated':'new'} <strong>${g}</strong> account. On save the appropriate portal account is ${edit?'updated':'created'} and temporary credentials are emailed (no self-registration).</div>
+      <ul style="font-size:13px">
+        <li><strong>User Group:</strong> ${g}</li>
+        <li><strong>Portal:</strong> ${groupPortal(g)}</li>
+        <li><strong>Role (derived):</strong> ${role}</li>
+        <li><strong>Name:</strong> ${au.fn||''} ${au.ln||''}${au.orgName?' ('+au.orgName+')':''}</li>
+        <li><strong>Email:</strong> ${au.email||'—'}</li>
+      </ul>`;
+  }
+
+  const footer=`${step>1?'<button class="btn btn-ghost" onclick="addUserStep(-1)">Back</button>':'<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>'}
+    ${step<3?'<button class="btn btn-primary" onclick="addUserStep(1)">Next</button>':'<button class="btn btn-primary" onclick="saveUser()">'+(edit?'Save Changes':'Create Account')+'</button>'}`;
+
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()">
+    <div class="modal-content xl">
+      <div class="modal-header"><h3>${edit?'Edit':'Add'} User — ${g} · Role ${role} <span style="font-weight:400;font-size:13px;color:var(--text-70)">(HCMD 3-step wizard)</span></h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+      <div class="modal-body">${stepper}${body}</div>
+      <div class="modal-footer">${footer}</div>
+    </div></div>`;
+}
+
+/* ═══ OPERATIONAL FORMS & WIZARDS ═══ */
+function hoursFormFields(prefix, hours){
+  hours=hours||defaultHours();
+  return WEEKDAYS.map(d=>`<div class="field" style="grid-column:span 1"><label><input type="checkbox" id="${prefix}-hr-${d}" ${hours[d]?'checked':''}/> ${d}</label>
+    <div style="display:flex;gap:4px;margin-top:4px"><input id="${prefix}-open-${d}" type="time" value="${hours[d]?.open||'09:00'}" style="flex:1"/><input id="${prefix}-close-${d}" type="time" value="${hours[d]?.close||'17:00'}" style="flex:1"/></div></div>`).join('');
+}
+function readHours(prefix){
+  const h={};
+  WEEKDAYS.forEach(d=>{
+    if(document.getElementById(prefix+'-hr-'+d)?.checked)
+      h[d]={open:fv(prefix+'-open-'+d)||'09:00',close:fv(prefix+'-close-'+d)||'17:00'};
+  });
+  return h;
+}
+
+function openModal(id){
+  if(id==='createCase') return renderCreateCaseModal();
+  if(id==='newVeteran') return renderNewVeteranModal();
+  if(id==='newLocation') return renderNewLocationModal();
+  if(id==='newOrg') return renderNewOrgModal();
+  if(id==='newProvider'){ state.newProvider={step:1,data:{locations:[],specialties:[],availability:[]}}; return renderNewProviderWizard(); }
+  if(id==='bookAppt'){ state.bookAppt={step:1,data:{}}; return renderBookApptWizard(); }
+}
+function closeModal(){ document.getElementById('modals-root').innerHTML=''; state.editLocationId=null; state.editUserEmail=null; }
+
+function renderCreateCaseModal(){
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content xl">
+    <div class="modal-header"><h3>Create Case — Staff Intake</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>Referring Organization</label><select id="cc-org">${refOrgList().map(o=>`<option>${o}</option>`).join('')}</select></div>
+      <div class="field"><label>Case Type</label><select id="cc-type">${CASE_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
+      <div class="field"><label>Select Veteran</label><select id="cc-veteran"><option value="">— Select existing veteran —</option>${VETERANS.map(v=>`<option value="${v.veteranId}">${v.name} (${v.veteranId})</option>`).join('')}<option value="__new">+ Create new veteran</option></select></div>
+      <div class="field"><label>Assign Provider</label><select id="cc-provider"><option value="">— Unassigned —</option>${PROVIDERS.filter(p=>p.status==='Active').map(p=>`<option>${p.name}</option>`).join('')}</select></div>
+      <div class="field full"><label>Internal Notes</label><textarea id="cc-notes" placeholder="Intake notes for provider/reviewer…"></textarea></div>
+      <div class="field full"><label>Document Checklist</label>
+        ${['STR','PMR','VAMC','PRIV','CP','C-File','CORR'].map(c=>`<label style="margin-right:12px"><input type="checkbox" id="cc-doc-${c}" ${['STR','PMR','VAMC'].includes(c)?'checked':''}/> ${c}</label>`).join('')}</div>
+      <div class="field"><label>Billing Mode</label><select id="cc-billing"><option>Standard</option><option>Deferred</option></select></div>
+      <div class="field"><label>Representative Linkage</label><select id="cc-rep"><option>None</option><option>Michael Torres — Attorney</option></select></div>
+    </div><p style="font-size:12px;color:var(--text-70);margin-top:12px">On save: assign client ID, case MRN, status Pending Records, send temporary credentials.</p></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveCase()">Create Case &amp; Account</button></div></div></div>`;
+}
+function saveCase(){
+  const vetSel=fv('cc-veteran'); const type=fv('cc-type'); const org=fv('cc-org');
+  if(!type){ toast('Case Type is required','error'); return; }
+  let veteran;
+  if(vetSel==='__new'){ closeModal(); openModal('newVeteran'); toast('Complete New Veteran form first, then create case'); return; }
+  if(!vetSel){ toast('Select a veteran','error'); return; }
+  veteran=VETERANS.find(v=>v.veteranId===vetSel);
+  if(!veteran){ toast('Veteran not found','error'); return; }
+  const mrn=nextMrn(); const provider=fv('cc-provider')||'—';
+  const billing=fv('cc-billing'); const amount=caseTypePrice(type)||900;
+  CASES.unshift({mrn,veteranId:veteran.veteranId,clientId:veteran.clientId,name:veteran.name,dob:veteran.dob,org,type,status:'Pending Records',provider,reviewer:'A. Nguyen',sla:'—',payment:billing==='Deferred'?'Deferred':'—',contentions:[],billingMode:billing,amount,rep:fv('cc-rep'),internalNotes:fv('cc-notes')});
+  veteran.cases=(veteran.cases||0)+1; veteran.lastStatus='Pending Records';
+  initCaseRecords(mrn);
+  closeModal(); toast('Case '+mrn+' created — Pending Records. Credentials sent to '+veteran.email);
+  if(state.page==='cases') render(); else goPage('cases');
+}
+
+function renderNewVeteranModal(){
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content xl">
+    <div class="modal-header"><h3>New Veteran</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>Referring Organization</label><select id="nv-org">${refOrgList().map(o=>`<option>${o}</option>`).join('')}</select></div>
+      <div class="field"><label>First Name</label><input id="nv-fn"/></div><div class="field"><label>Last Name</label><input id="nv-ln"/></div>
+      <div class="field"><label>Date of Birth</label><input id="nv-dob" type="date"/></div><div class="field"><label>Gender</label><select id="nv-gender"><option>Male</option><option>Female</option><option>Other</option></select></div>
+      <div class="field"><label>Email (login)</label><input id="nv-email" type="email"/></div><div class="field"><label>Phone</label><input id="nv-phone"/></div>
+      <div class="field full"><label>Mailing Address</label><input id="nv-addr"/></div>
+      <div class="field full"><label>Representative Linkage</label><select id="nv-rep"><option>None</option><option>Michael Torres — Attorney</option></select></div>
+    </div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVeteran()">Save &amp; Send Credentials</button></div></div></div>`;
+}
+function saveVeteran(){
+  const fn=fv('nv-fn').trim(), ln=fv('nv-ln').trim(), email=fv('nv-email').trim();
+  if(!fn||!ln||!email){ toast('First name, last name, and email are required','error'); return; }
+  const vid=nextVeteranId(), cid=nextClientId();
+  VETERANS.push({veteranId:vid,clientId:cid,name:fn+' '+ln,dob:fv('nv-dob'),gender:fv('nv-gender'),org:fv('nv-org'),cases:0,lastStatus:'—',email,phone:fv('nv-phone'),address:fv('nv-addr'),rep:fv('nv-rep')});
+  USERS.push({name:fn+' '+ln,email,group:'Veteran',role:'User',detail:vid+' · Org: '+fv('nv-org'),status:'Active'});
+  closeModal(); toast('Veteran '+fn+' '+ln+' created — temporary credentials emailed');
+  render();
+}
+
+function renderNewLocationModal(){
+  const edit=state.editLocationId?LOCATION_DATA.find(l=>l.id===state.editLocationId):null;
+  const addr=edit||{};
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content xl">
+    <div class="modal-header"><h3>${edit?'Edit':'New'} Location</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field full"><label>Name</label><input id="loc-name" value="${addr.name||''}" placeholder="Nexletta Clinic — Houston"/></div>
+      <div class="field"><label>Street</label><input id="loc-street" value="${addr.street||''}"/></div>
+      <div class="field"><label>City</label><input id="loc-city" value="${addr.city||''}"/></div>
+      <div class="field"><label>State</label><input id="loc-state" value="${addr.state||''}" maxlength="2"/></div>
+      <div class="field"><label>ZIP / Postcode</label><input id="loc-zip" value="${addr.zip||''}"/></div>
+      <div class="field"><label>Main Contact Number</label><input id="loc-contact" value="${addr.contact||''}"/></div>
+      <div class="field"><label>Fax Number (optional)</label><input id="loc-fax" value="${addr.fax||''}"/></div>
+      <div class="field"><label>Email Address (optional)</label><input id="loc-email" type="email" value="${addr.email||''}"/></div>
+      <div class="field"><label>Type</label><select id="loc-type"><option ${addr.type==='In-person'?'selected':''}>In-person</option><option ${addr.type==='Telehealth'?'selected':''}>Telehealth</option><option ${addr.type==='Hybrid'?'selected':''}>Hybrid</option></select></div>
+      <div class="field full"><label>Specialties Offered (multi-select)</label><select id="loc-spec" multiple size="4" style="height:auto">${SPECIALTIES.map(s=>`<option ${(addr.specialties||[]).includes(s)?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="field full"><label>Operating Hours (Mon–Sun open/close)</label><div class="form-grid" style="grid-template-columns:repeat(3,1fr)">${hoursFormFields('loc',addr.hours)}</div></div>
+      <div class="field full"><label>Additional Notes / Directions</label><textarea id="loc-notes">${addr.notes||''}</textarea></div>
+      <div class="field full"><label>Google Maps Link (auto-generated; override optional)</label><input id="loc-maps-override" value="${addr.mapsOverride||''}" placeholder="Leave blank to auto-generate from address"/></div>
+      <div class="field"><label>Status</label><select id="loc-status"><option ${addr.status!=='Inactive'?'selected':''}>Active</option><option ${addr.status==='Inactive'?'selected':''}>Inactive</option></select></div>
+    </div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveLocation()">Save Location</button></div></div></div>`;
+}
+function saveLocation(){
+  const name=fv('loc-name').trim(); if(!name){ toast('Location Name is required','error'); return; }
+  const street=fv('loc-street'),city=fv('loc-city'),state=fv('loc-state'),zip=fv('loc-zip');
+  const mapsOverride=fv('loc-maps-override').trim();
+  const mapsLink=mapsOverride||mapsFromAddress(street,city,state,zip);
+  const payload={name,street,city,state,zip,contact:fv('loc-contact'),fax:fv('loc-fax'),email:fv('loc-email'),type:fv('loc-type'),
+    specialties:fvs('loc-spec'),hours:readHours('loc'),notes:fv('loc-notes'),mapsLink,mapsOverride,status:fv('loc-status')};
+  if(state.editLocationId){
+    const l=LOCATION_DATA.find(x=>x.id===state.editLocationId);
+    if(l) Object.assign(l,payload);
+    toast('Location updated: '+name);
+  } else {
+    LOCATION_DATA.push({id:nextLocId(),...payload});
+    toast('Location created: '+name);
+  }
+  closeModal(); render();
+}
+
+function renderNewOrgModal(){
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content md">
+    <div class="modal-header"><h3>New Referral Organization</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field full"><label>Organization Name</label><input id="org-name"/></div>
+      <div class="field"><label>Organization Type</label><select id="org-type"><option>VSO</option><option>Law Firm</option><option>Referral Agency</option><option>Healthcare Organization</option><option>Other</option></select></div>
+      <div class="field"><label>Primary Contact Name</label><input id="org-contact"/></div>
+      <div class="field"><label>Contact Email</label><input id="org-email" type="email"/></div>
+      <div class="field"><label>Contact Phone</label><input id="org-phone"/></div>
+      <div class="field"><label>Billing Contact</label><input id="org-bill-contact"/></div>
+      <div class="field full"><label>Address</label><input id="org-addr"/></div>
+      <div class="field"><label>Default Billing Mode</label><select id="org-billing"><option value="Standard">Standard (per-case)</option><option value="Deferred">Deferred (consolidated)</option></select></div>
+      <div class="field"><label>Billing Period</label><select id="org-period"><option>—</option><option>Monthly</option><option>Bi-weekly</option><option>Quarterly</option></select></div>
+      <div class="field"><label>Status</label><select id="org-status"><option>Active</option><option>Inactive</option></select></div>
+    </div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveRefOrg()">Save Organization</button></div></div></div>`;
+}
+function saveRefOrg(){
+  const name=fv('org-name').trim(); if(!name){ toast('Organization Name is required','error'); return; }
+  REF_ORG_DATA.push({id:nextOrgId(),name,type:fv('org-type'),contact:fv('org-contact'),contactEmail:fv('org-email'),contactPhone:fv('org-phone'),
+    billingContact:fv('org-bill-contact'),billingMode:fv('org-billing'),billingPeriod:fv('org-period'),address:fv('org-addr'),status:fv('org-status')});
+  closeModal(); toast('Organization created: '+name); render();
+}
+
+function renderNewProviderWizard(){
+  const s=state.newProvider.step, d=state.newProvider.data;
+  const steps=['Select Locations','Select Specialties','Provider Details','Availability','Confirm'];
+  const stepper=`<div class="stepper">${steps.map((lbl,i)=>`<span class="step ${i+1<s?'done':i+1===s?'current':''}">${i+1} ${lbl}</span>`).join('')}</div>`;
+  let body='';
+  if(s===1) body=`<p>Select one or more active locations:</p><div style="display:flex;flex-direction:column;gap:8px">${LOCATION_DATA.filter(l=>l.status==='Active').map(l=>`<label><input type="checkbox" value="${l.id}" ${d.locations.includes(l.id)?'checked':''} onchange="toggleProvLoc('${l.id}',this.checked)"/> ${l.name} (${l.type})</label>`).join('')}</div>`;
+  else if(s===2) body=`<p>Select specialties:</p><div style="display:flex;flex-direction:column;gap:8px">${SPECIALTIES.map(sp=>`<label><input type="checkbox" value="${sp}" ${d.specialties.includes(sp)?'checked':''} onchange="toggleProvSpec('${sp.replace(/'/g,"\\'")}',this.checked)"/> ${sp}</label>`).join('')}</div>`;
+  else if(s===3) body=`<div class="form-grid">
+    <div class="field"><label>Title &amp; Credentials</label><input id="prv-cred" placeholder="MD, PsyD"/></div>
+    <div class="field"><label>First Name</label><input id="prv-fn"/></div><div class="field"><label>Last Name</label><input id="prv-ln"/></div>
+    <div class="field"><label>Contact Number</label><input id="prv-phone"/></div><div class="field"><label>Email Address</label><input id="prv-email" type="email"/></div>
+    <div class="field"><label>License Number</label><input id="prv-lic"/></div><div class="field"><label>License State</label><select id="prv-lic-st">${LICENSE_STATES.map(s=>`<option>${s}</option>`).join('')}</select></div>
+    <div class="field"><label>NPI Number</label><input id="prv-npi"/></div></div>`;
+  else if(s===4) body=`<p>Recurring weekly schedule (optional — provider can configure later):</p><div style="display:flex;flex-wrap:wrap;gap:8px">${WEEKDAYS.map(day=>`<label><input type="checkbox" ${d.availability.includes(day)?'checked':''} onchange="toggleProvAvail('${day}',this.checked)"/> ${day} 9:00–17:00</label>`).join('')}</div>`;
+  else body=`<div class="banner banner-info">Confirm new provider. Portal invitation will be sent on save.</div><ul><li><strong>Locations:</strong> ${d.locations.length} selected</li><li><strong>Specialties:</strong> ${d.specialties.join(', ')||'—'}</li><li><strong>Availability:</strong> ${d.availability.join(', ')||'Configure later'}</li></ul>`;
+  const footer=`${s>1?'<button class="btn btn-ghost" onclick="provWizardStep(-1)">Back</button>':'<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>'}
+    ${s<5?'<button class="btn btn-primary" onclick="provWizardStep(1)">Next</button>':'<button class="btn btn-primary" onclick="saveProvider()">Send Provider Portal Invitation</button>'}`;
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content xl">
+    <div class="modal-header"><h3>New Provider — Step ${s}/5</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body">${stepper}${body}</div><div class="modal-footer">${footer}</div></div></div>`;
+}
+function toggleProvLoc(id,v){ const d=state.newProvider.data; if(v&&!d.locations.includes(id)) d.locations.push(id); else d.locations=d.locations.filter(x=>x!==id); }
+function toggleProvSpec(sp,v){ const d=state.newProvider.data; if(v&&!d.specialties.includes(sp)) d.specialties.push(sp); else d.specialties=d.specialties.filter(x=>x!==sp); }
+function toggleProvAvail(day,v){ const d=state.newProvider.data; if(v&&!d.availability.includes(day)) d.availability.push(day); else d.availability=d.availability.filter(x=>x!==day); }
+function provWizardStep(delta){
+  const s=state.newProvider.step;
+  if(delta>0&&s===1&&!state.newProvider.data.locations.length){ toast('Select at least one location','error'); return; }
+  if(delta>0&&s===2&&!state.newProvider.data.specialties.length){ toast('Select at least one specialty','error'); return; }
+  if(delta>0&&s===3){ const fn=fv('prv-fn').trim(), em=fv('prv-email').trim(); if(!fn||!em){ toast('First name and email required','error'); return; }
+    state.newProvider.data.details={cred:fv('prv-cred'),fn,ln:fv('prv-ln'),phone:fv('prv-phone'),email:em,lic:fv('prv-lic'),licSt:fv('prv-lic-st'),npi:fv('prv-npi')}; }
+  state.newProvider.step=Math.min(5,Math.max(1,s+delta)); renderNewProviderWizard();
+}
+function saveProvider(){
+  const d=state.newProvider.data, det=d.details||{};
+  const name='Dr. '+det.fn+' '+det.ln+', '+(det.cred||'MD');
+  const locNames=d.locations.map(id=>LOCATION_DATA.find(l=>l.id===id)?.name).filter(Boolean).join(', ');
+  PROVIDERS.push({id:nextProviderId(),name,specialty:d.specialties[0],locations:locNames,license:det.lic,licenseState:det.licSt,npi:det.npi,email:det.email,phone:det.phone,cases:0,status:'Active',availability:d.availability});
+  USERS.push({name,email:det.email,group:'Provider',role:'User',detail:d.specialties[0]+' · '+det.licSt,status:'Active'});
+  closeModal(); toast('Provider '+name+' created — portal invitation sent'); render();
+}
+
+function renderBookApptWizard(){
+  const s=state.bookAppt.step, d=state.bookAppt.data;
+  const steps=['Veteran','Case Type','Location','Provider','Time Slot','Confirm'];
+  const stepper=`<div class="stepper">${steps.map((lbl,i)=>`<span class="step ${i+1<s?'done':i+1===s?'current':''}">${i+1} ${lbl}</span>`).join('')}</div>`;
+  let body='';
+  if(s===1) body=`<div class="field"><label>Veteran / Case</label><select id="ap-vet">${CASES.map(c=>`<option value="${c.mrn}">${c.name} — ${c.mrn}</option>`).join('')}</select></div>`;
+  else if(s===2) body=`<div class="field"><label>Appointment Type</label><select id="ap-type"><option>IME Evaluation</option><option>DBQ Evaluation</option><option>Telehealth</option><option>Nexus Letter — No visit</option></select></div>`;
+  else if(s===3) body=`<div class="field"><label>Location</label><select id="ap-loc">${LOCATION_DATA.filter(l=>l.status==='Active').map(l=>`<option>${l.name} (${l.type})</option>`).join('')}</select></div>`;
+  else if(s===4) body=`<div class="field"><label>Provider</label><select id="ap-prv">${PROVIDERS.filter(p=>p.status==='Active').map(p=>`<option>${p.name}</option>`).join('')}</select></div>`;
+  else if(s===5) body=`<p><strong>Step 5: Time Slot</strong></p><div class="form-grid"><div class="field"><label>Date</label><input id="ap-date" type="date" value="2026-07-10"/></div><div class="field"><label>Time</label><input id="ap-time" type="time" value="10:00"/></div></div>${weeklyCalendar()}<div class="field full"><label>Notes</label><textarea id="ap-notes"></textarea></div>`;
+  else { const c=CASES.find(x=>x.mrn===d.mrn); body=`<ul><li><strong>Veteran:</strong> ${c?.name} (${d.mrn})</li><li><strong>Type:</strong> ${d.type}</li><li><strong>Location:</strong> ${d.location}</li><li><strong>Provider:</strong> ${d.provider}</li><li><strong>When:</strong> ${d.datetime}</li></ul>`; }
+  const footer=`${s>1?'<button class="btn btn-ghost" onclick="apptWizardStep(-1)">Back</button>':'<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>'}
+    ${s<6?'<button class="btn btn-primary" onclick="apptWizardStep(1)">Next</button>':'<button class="btn btn-primary" onclick="saveAppointment()">Confirm Appointment</button>'}`;
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content xl">
+    <div class="modal-header"><h3>New Appointment — Step ${s}/6</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body">${stepper}${body}</div><div class="modal-footer">${footer}</div></div></div>`;
+}
+function apptWizardStep(delta){
+  const s=state.bookAppt.step, d=state.bookAppt.data;
+  if(delta>0&&s===1) d.mrn=fv('ap-vet');
+  if(delta>0&&s===2) d.type=fv('ap-type');
+  if(delta>0&&s===3) d.location=fv('ap-loc');
+  if(delta>0&&s===4) d.provider=fv('ap-prv');
+  if(delta>0&&s===5){ d.datetime=fv('ap-date')+' '+fv('ap-time'); d.notes=fv('ap-notes'); }
+  state.bookAppt.step=Math.min(6,Math.max(1,s+delta)); renderBookApptWizard();
+}
+function saveAppointment(){
+  const d=state.bookAppt.data, c=CASES.find(x=>x.mrn===d.mrn);
+  if(!c){ toast('Case not found','error'); return; }
+  const dtStr='Jul 10, 2026 10:00 AM';
+  APPOINTMENTS.unshift({id:nextApptId(),name:c.name,mrn:c.mrn,provider:d.provider,location:d.location,type:d.type,datetime:dtStr,status:'Scheduled',notes:d.notes||''});
+  closeModal(); toast('Appointment booked — '+c.name+' · '+dtStr); render();
+}
+
+function openMarkPaid(id){
+  state.markPaidId=id;
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content md">
+    <div class="modal-header"><h3>Mark Invoice as Paid</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="field full"><label>Payment Reference</label><input id="pay-ref" placeholder="Zelle confirmation, check #, wire ref…"/></div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="confirmMarkPaid()">Confirm Payment</button></div></div></div>`;
+}
+function confirmMarkPaid(){
+  const ref=fv('pay-ref').trim(); if(!ref){ toast('Payment reference is required','error'); return; }
+  markInvoicePaid(state.markPaidId, ref); closeModal();
+}
+function markInvoicePaid(id, paymentRef){
+  const inv=INVOICES.find(i=>i.id===id);
+  if(!inv||inv.status!=='Pending') return;
+  inv.status='Paid'; inv.paid=todayFull(); inv.paymentRef=paymentRef||('ZL-'+Math.floor(10000+Math.random()*90000));
+  const c=CASES.find(x=>x.mrn===inv.mrn);
+  if(c){ c.payment='Paid'; if(c.status==='Pending Payment'){ c.status='In progress'; toast('Payment confirmed — case advanced to In progress'); } else toast('Invoice '+id+' marked as Paid'); }
+  else toast('Invoice '+id+' marked as Paid');
+  render();
+}
+
+function saveUser(){
+  captureAddUserForm();
+  const g=state.addUser.group, au=state.addUser.form||{};
+  const role=state.addUser.superAdmin?'Super Admin':deriveRole(g);
+  const name=(au.fn&&au.ln)?(au.fn+' '+au.ln):(au.orgName||'New User');
+  const email=au.email||('user'+USERS.length+'@nexletta.com');
+  if(!au.fn||!au.email){ toast('Name and email are required','error'); return; }
+  const detail=g==='Veteran'?nextVeteranId()+' · Org: '+(au.org||'None'):g==='Provider'?(au.specialty||SPECIALTIES[0])+' · '+(au.licSt||'TX'):au.companyRole||groupPortal(g);
+  if(state.editUserEmail){
+    const u=USERS.find(x=>x.email===state.editUserEmail);
+    if(u){ u.name=name; u.group=g; u.role=role; u.email=email; u.detail=detail; toast('User updated: '+name); }
+  } else {
+    USERS.push({name,email,group:g,role,detail,status:'Active'});
+    if(g==='Veteran') createVeteranEntry({fn:au.fn,ln:au.ln,dob:au.dob,email,org:au.org,gender:au.gender,phone:au.phone,address:au.address,rep:au.rep||'None'});
+    else if(g==='Provider'){
+      const pname='Dr. '+au.fn+' '+au.ln+', '+(au.cred||'MD');
+      PROVIDERS.push({id:nextProviderId(),name:pname,specialty:au.specialty||SPECIALTIES[0],locations:au.location||locationList()[0]||'',license:au.lic||'',licenseState:au.licSt||'TX',npi:au.npi||'',email,phone:au.phone||'',cases:0,status:'Active',availability:[]});
+    }
+    toast(g+' account created — role '+role+'. Temporary credentials emailed.');
+  }
+  state.editUserEmail=null;
+  closeModal(); render();
+}
+function submitEvalForQA(mrn){
+  const c=CASES.find(x=>x.mrn===mrn); if(!c)return;
+  c.status='Pending QA Review';
+  toast('Evaluation submitted — case '+mrn+' moved to Pending QA Review');
+  render();
+}
+function submitVetNotes(){
+  vetNotes.personalStatement=fv('vet-ps')||vetNotes.personalStatement;
+  const ans=fv('vet-sq-ans'); if(ans) vetNotes.staffQuestions[0].a=ans;
+  toast('Notes saved'); render();
+}
+function submitVetPayment(){
+  const mrn=getActiveCaseMrn(); vetPaymentSubmitted[mrn]=true;
+  staffNotifs.unshift({t:'Veteran payment confirmation',d:mrn+' — client pressed I have made payment',u:1});
+  toast('Payment confirmation sent to billing team'); render();
+}
+function uploadPOA(){
+  const vid=getActiveVetId(); vetPOA[vid]='Pending staff review';
+  toast('POA uploaded — pending staff verification'); render();
+}
+function providerToggleBlock(day){
+  if(providerBlockedDays.includes(day)) providerBlockedDays=providerBlockedDays.filter(d=>d!==day);
+  else providerBlockedDays.push(day);
+  toast(day+' '+(providerBlockedDays.includes(day)?'blocked':'unblocked')); render();
+}
+function setLocationView(v){ state.locationView=v; render(); }
+function editLocation(id){ state.editLocationId=id; renderNewLocationModal(); }
+function openEditUser(email){
+  const u=USERS.find(x=>x.email===email); if(!u)return;
+  state.editUserEmail=email; state.addUser={step:1,group:u.group,superAdmin:u.role==='Super Admin',form:{fn:u.name.split(' ')[0],ln:u.name.split(' ').slice(1).join(' '),email:u.email,detail:u.detail}};
+  renderAddUser();
+}
+function ugPermCheckboxes(selected){
+  return MODULE_PERMS.map(m=>{
+    const id='ug-p-'+m.replace(/[^a-z0-9]/gi,'');
+    const on=!selected||selected.includes(m);
+    return `<label style="font-size:13px;display:inline-flex;align-items:center;gap:4px;margin:0 12px 8px 0"><input type="checkbox" id="${id}" ${on?'checked':''}/> ${m}</label>`;
+  }).join('');
+}
+function readUgPerms(){
+  return MODULE_PERMS.filter(m=>document.getElementById('ug-p-'+m.replace(/[^a-z0-9]/gi,''))?.checked);
+}
+function openUserGroupAdd(){
+  state.editUserGroup=null;
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content md">
+    <div class="modal-header"><h3>Add User Group</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>Group Name</label><input id="ug-name" placeholder="e.g. Intake Coordinator"/></div>
+      <div class="field"><label>Portal</label><select id="ug-portal"><option>Staff Portal</option><option>Provider Portal</option><option>Veteran Portal</option></select></div>
+      <div class="field full"><label>Module Permissions</label><div style="display:flex;flex-wrap:wrap;margin-top:6px">${ugPermCheckboxes(null)}</div></div>
+    </div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveUserGroup()">Save</button></div></div></div>`;
+}
+function deleteUserGroup(name){
+  if(USERS.some(u=>u.group===name)){ toast('Cannot delete — users are assigned to this group','error'); return; }
+  if(!confirm('Delete user group "'+name+'"?')) return;
+  USER_GROUP_DEFS=USER_GROUP_DEFS.filter(g=>g.name!==name);
+  toast('User group deleted: '+name);
+  render();
+}
+function openUserGroupEdit(name){
+  const g=USER_GROUP_DEFS.find(x=>x.name===name); if(!g)return;
+  state.editUserGroup=name;
+  const perms=g.permissions||MODULE_PERMS;
+  document.getElementById('modals-root').innerHTML=`<div class="modal-overlay show" onclick="if(event.target===this)closeModal()"><div class="modal-content md">
+    <div class="modal-header"><h3>Edit User Group — ${name}</h3><button onclick="closeModal()"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>Portal</label><input readonly value="${g.portal}"/></div>
+      <div class="field"><label>Access Scope</label><input id="ug-scope" value="${g.scope}"/></div>
+      <div class="field"><label>Active</label><select id="ug-active"><option ${g.active?'selected':''}>Active</option><option ${!g.active?'selected':''}>Inactive</option></select></div>
+      <div class="field full"><label>Module Permissions</label><div style="display:flex;flex-wrap:wrap;margin-top:6px">${ugPermCheckboxes(perms)}</div></div>
+    </div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveUserGroup('${name.replace(/'/g,"\\'")}')">Save</button></div></div></div>`;
+}
+function saveUserGroup(name){
+  if(name){
+    const g=USER_GROUP_DEFS.find(x=>x.name===name);
+    if(g){
+      g.scope=fv('ug-scope'); g.active=fv('ug-active')==='Active';
+      g.permissions=readUgPerms();
+      toast('User group updated: '+name);
+    }
+  } else {
+    const groupName=fv('ug-name').trim();
+    const portal=fv('ug-portal');
+    const perms=readUgPerms();
+    if(!groupName){ toast('Group name is required','error'); return; }
+    if(USER_GROUP_DEFS.some(x=>x.name===groupName)){ toast('Group name already exists','error'); return; }
+    const role=groupName==='Admin'?'Admin':'User';
+    USER_GROUP_DEFS.push({name:groupName,portal,role,scope:perms.length?perms.join(', '):'Custom access',permissions:perms,active:true});
+    toast('User group created: '+groupName);
+  }
+  state.editUserGroup=null;
+  closeModal(); render();
+}
+
+/* ═══ RENDER ═══ */
+function renderMain(){
+  const main=document.getElementById('main-content');let html='';
+  if(state.portal==='staff'){
+    const map={dashboard:staffDashboard,cases:staffCases,veterans:staffVeterans,appointments:staffAppointments,providers:staffProviders,billing:staffBilling,qa:staffQA,tasks:tasksPage,announcements:staffAnnouncements,admin:staffAdmin};
+    html=(map[state.page]||staffDashboard)();
+  } else if(state.portal==='provider'){
+    const map={'p-dashboard':providerDashboard,'p-cases':providerCases,'p-calendar':providerCalendar,'p-eval':providerEvalQueue,'p-tasks':tasksPage,'p-earnings':providerEarnings,'p-announcements':providerAnnouncements,'p-help':providerHelp};
+    html=(map[state.page]||providerDashboard)();
+  } else {
+    const map={'v-dashboard':veteranDashboard,'v-managed':veteranManaged,'v-case':veteranCase,'v-records':veteranRecords,'v-notes':veteranNotes,'v-appointments':veteranAppointments,'v-billing':veteranBilling,'v-reports':veteranReports};
+    html=(map[state.page]||veteranDashboard)();
+  }
+  main.innerHTML=`<div class="page active">${html}</div>`;
+}
+
+function renderNotifs(){
+  const panel=document.getElementById('notif-panel');
+  const items=state.portal==='veteran'?[
+    {t:'document.requested',d:'Please upload Service Treatment Records',u:1},
+    {t:'appointment.scheduled',d:'Jul 10, 2026 10:00 AM — DBQ Evaluation',u:1}
+  ]:state.portal==='provider'?[
+    {t:'case.assigned',d:'NXL-2026-0089 — DBQ (3 contentions)',u:1},
+    {t:'appointment.booked',d:'Jul 10, 2026 10:00 AM',u:1},
+    {t:'case.sla_approaching',d:'NXL-2026-0089 — check SLA',u:0}
+  ]:staffNotifs.slice(0,8);
+  panel.innerHTML=items.length?items.map(n=>`<div class="notif-item ${n.u?'unread':''}"><strong>${n.t}</strong>${n.d}</div>`).join(''):'<div class="notif-item">No notifications</div>';
+}
+
+function render(){
+  const titles={staff:'Nexletta Staff Portal',provider:'Nexletta Provider Portal',veteran:'Nexletta Veteran Portal'};
+  document.getElementById('portal-title').textContent=titles[state.portal];
+  const roleEl=document.getElementById('role-switcher'),vetEl=document.getElementById('veteran-user-switcher');
+  roleEl.classList.toggle('hidden',state.portal!=='staff');
+  vetEl.classList.toggle('hidden',state.portal!=='veteran');
+  if(state.portal==='staff'){
+    roleEl.innerHTML=STAFF_ROLES.map(r=>`<option ${r===state.role?'selected':''}>${r} — Jordan Ellis</option>`).join('');
+    document.getElementById('acting-as-label').textContent=`Acting as: ${state.role} — Jordan Ellis`;
+  } else if(state.portal==='provider'){
+    document.getElementById('acting-as-label').textContent='Dr. Sarah Whitmore, MD — Provider';
+  } else {
+    document.getElementById('acting-as-label').textContent=state.vetUser==='representative'?'Michael Torres — Representative':'James R. Martinez — Veteran';
+  }
+  renderRail();renderMain();renderNotifs();
+}
+
+function login(portal){
+  state.portal=portal;
+  state.page=portal==='staff'?'dashboard':portal==='provider'?'p-dashboard':'v-dashboard';
+  state.openCase=null;state.caseTab='Overview';state.selectedVeteran=null;
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app-shell').classList.remove('hidden');
+  render();
+}
+function logout(){
+  state.portal=null;
+  document.getElementById('app-shell').classList.add('hidden');
+  document.getElementById('login-screen').classList.remove('hidden');
+  closeModal();
+}
+
+window.goPage=p=>{state.page=p;state.openCase=null;render();};
+window.noop=()=>{};
+window.setCaseFilter=f=>{state.caseFilter=f;render();};
+window.setAdminTab=setAdminTab;
+window.setUserGroupFilter=setUserGroupFilter;
+window.openAddUser=openAddUser;window.setAddUserGroup=setAddUserGroup;window.addUserStep=addUserStep;window.toggleSuperAdmin=toggleSuperAdmin;
+window.openCaseModal=openCaseModal;window.closeCaseModal=closeCaseModal;window.setCaseModalTab=setCaseModalTab;
+window.attachForm=attachForm;window.detachForm=detachForm;
+window.openProviderCase=mrn=>{state.openCase=mrn;state.caseTab='Overview';render();};
+window.closeCase=()=>{state.openCase=null;render();};
+window.setCaseTab=t=>{state.caseTab=t;render();};
+window.openModal=openModal;window.closeModal=closeModal;
+window.selectManagedVet=id=>{state.selectedVeteran=id;state.page='v-case';render();};
+window.backToManaged=()=>{state.selectedVeteran=null;state.page='v-managed';render();};
+/* Tasks + Todo bindings */
+window.setTaskView=v=>{state.taskView=v;render();};
+window.setTaskStatusFilter=v=>{state.taskStatusFilter=v;render();};
+window.setTaskCatFilter=v=>{state.taskCatFilter=v;render();};
+window.openTaskDetail=openTaskDetail;window.setTaskDetailTab=setTaskDetailTab;
+window.openAddTask=openAddTask;window.submitAddTask=submitAddTask;
+window.openTodo=openTodo;window.renderTodoModal=renderTodoModal;window.submitTodo=submitTodo;
+window.setVetCaseTab=setVetCaseTab;window.downloadReport=downloadReport;
+window.saveCase=saveCase;window.saveVeteran=saveVeteran;window.saveLocation=saveLocation;window.saveRefOrg=saveRefOrg;
+window.saveProvider=saveProvider;window.saveAppointment=saveAppointment;window.openMarkPaid=openMarkPaid;window.confirmMarkPaid=confirmMarkPaid;
+window.markInvoicePaid=markInvoicePaid;window.submitCaseModalSave=submitCaseModalSave;window.applyCaseStatus=applyCaseStatus;window.toggleStatusReason=toggleStatusReason;
+window.triageRecord=triageRecord;window.uploadVetRecord=uploadVetRecord;window.markRecordsComplete=markRecordsComplete;
+window.submitVetNotes=submitVetNotes;window.submitVetPayment=submitVetPayment;window.uploadPOA=uploadPOA;
+window.submitEvalForQA=submitEvalForQA;window.providerToggleBlock=providerToggleBlock;
+window.provWizardStep=provWizardStep;window.toggleProvLoc=toggleProvLoc;window.toggleProvSpec=toggleProvSpec;window.toggleProvAvail=toggleProvAvail;
+window.apptWizardStep=apptWizardStep;window.setLocationView=setLocationView;window.editLocation=editLocation;
+window.openEditUser=openEditUser;window.saveUser=saveUser;window.openUserGroupEdit=openUserGroupEdit;window.openUserGroupAdd=openUserGroupAdd;window.saveUserGroup=saveUserGroup;window.deleteUserGroup=deleteUserGroup;
+window.qaApprove=qaApprove;window.qaReturn=qaReturn;
+window.openAnnouncementModal=openAnnouncementModal;window.submitAnnouncement=submitAnnouncement;window.deleteAnnouncement=deleteAnnouncement;
+window.openCaseTypeModal=openCaseTypeModal;window.saveCaseType=saveCaseType;window.openTemplateModal=openTemplateModal;window.saveTemplate=saveTemplate;
+window.addCaseAttachment=addCaseAttachment;window.deleteCaseAttachment=deleteCaseAttachment;
+window.setEvalQueueTab=setEvalQueueTab;window.setProviderCaseFilter=setProviderCaseFilter;
+
+document.querySelectorAll('.portal-entry').forEach(el=>el.onclick=()=>login(el.dataset.portal));
+document.getElementById('btn-logout').onclick=logout;
+document.getElementById('role-switcher').onchange=e=>{state.role=e.target.value.split(' — ')[0];if(!canAccess(state.page))state.page='dashboard';state.openCase=null;render();};
+document.getElementById('veteran-user-switcher').onchange=e=>{state.vetUser=e.target.value;state.selectedVeteran=null;state.page='v-dashboard';render();};
+document.getElementById('bell-btn').onclick=e=>{e.stopPropagation();document.getElementById('notif-panel').classList.toggle('show');};
+document.addEventListener('click',()=>document.getElementById('notif-panel').classList.remove('show'));
